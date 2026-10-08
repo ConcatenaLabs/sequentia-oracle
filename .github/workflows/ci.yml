@@ -27,3 +27,5 @@ jobs:
         env:
           SEQUENTIA_SRC: ${{ github.workspace }}/Sequentia
         run: python3 tests/test_attestation.py
+      - name: the signer
+        run: python3 tests/test_signer.py

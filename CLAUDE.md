@@ -35,7 +35,7 @@ that are not obvious from the code. Node and consensus conventions live in the
 
 ## Working in this repository
 
-- `python3 tests/test_attestation.py` is the
+- `python3 tests/test_attestation.py && python3 tests/test_signer.py` is the
   gate before every pull request (CI runs the same). With `SEQUENTIA_SRC`
   pointing at a node checkout, one more test compares BIP340 over every message
   length with the node's test framework.

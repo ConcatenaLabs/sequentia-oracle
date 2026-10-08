@@ -1,0 +1,52 @@
+#!/usr/bin/env python3
+# Copyright (c) 2026 The Sequentia developers
+# Distributed under the MIT software license.
+"""Sign prices into append-only logs. Holds the oracle key; serves nothing.
+
+    sequentia-oracle-signer --config signer.json             sign every interval
+    sequentia-oracle-signer --config signer.json --once      sign one round, exit
+    sequentia-oracle-signer --config signer.json --print-pubkey
+    sequentia-oracle-signer --config signer.json --create-key --once
+
+See doc/runbook.md for the configuration and the deployment beside a web
+process that publishes the logs.
+"""
+
+import argparse
+import json
+import os
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), ".."))
+
+from sequentia_oracle import signer as S     # noqa: E402
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--config", required=True, help="the signer's JSON config")
+    ap.add_argument("--once", action="store_true", help="sign one round and exit")
+    ap.add_argument("--print-pubkey", action="store_true",
+                    help="print the x-only public key contracts pin, and exit")
+    ap.add_argument("--create-key", action="store_true",
+                    help="make a new key at `keyfile` if there is none and this "
+                         "signer has never signed (its logs are empty)")
+    args = ap.parse_args()
+    cfg = S.load_config(args.config)
+    sig = S.Signer(cfg, create_key=args.create_key)
+    if args.print_pubkey:
+        print(sig.key.hex())
+        return 0
+    sig.lock()
+    S.say(f"key {sig.key.hex()}; formats {sig.formats}; {len(sig.markets)} "
+          f"markets every {sig.interval:g}s; logs {sig.log_v1} and {sig.log_v2}")
+    if args.once:
+        n = sig.tick()
+        print(json.dumps({"signed": n, "errors": sig.errors}, sort_keys=True))
+        return 0 if not sig.errors else 2
+    sig.run_forever()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
