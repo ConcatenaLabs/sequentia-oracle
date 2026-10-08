@@ -1,0 +1,30 @@
+{
+  "_note": "A signer config. Every key is described in doc/runbook.md; a key this signer does not read is refused at start. Keys starting with _ are comments.",
+  "keyfile": "/root/sequentia/oracle-signer/1/oracle.key",
+  "log_v1": "/root/sequentia/pignus-data/attestations.log",
+  "log_v2": "/root/sequentia/pignus-data/attestations-v2.log",
+  "status": "/root/sequentia/pignus-data/signer-status.json",
+  "interval": 60,
+  "_formats_note": "1 is the format Pignus loans originated so far expect; drop it once none of them is open. 2 is the one contracts build on.",
+  "formats": [1, 2],
+  "_precision_note": "Format 2's precision; format 1's price_scale is 10 to this power. 5 is the Pignus testnet's price scale of 100000.",
+  "precision": 5,
+  "markets": ["GOLD/USDX", "SILVR/USDX", "OILX/USDX", "SEQ/USDX", "EURX/USDX", "BTC/USDX"],
+  "_assets_note": "Each symbol's asset id as the node prints it, or unit:BTC for native bitcoin and unit:USD for the US dollar. tools/resolve_assets.py reads them from a registry. Format 2 signs these ids: check them.",
+  "assets": {
+    "GOLD": "0000000000000000000000000000000000000000000000000000000000000001",
+    "SILVR": "0000000000000000000000000000000000000000000000000000000000000002",
+    "OILX": "0000000000000000000000000000000000000000000000000000000000000003",
+    "SEQ": "0000000000000000000000000000000000000000000000000000000000000004",
+    "EURX": "0000000000000000000000000000000000000000000000000000000000000005",
+    "USDX": "0000000000000000000000000000000000000000000000000000000000000006",
+    "BTC": "unit:BTC"
+  },
+  "_precisions_note": "The decimal places of each asset. A wrong one signs a price wrong by a power of ten, with a perfectly good signature; every asset in markets needs one.",
+  "precisions": {"GOLD": 8, "SILVR": 8, "OILX": 8, "SEQ": 8, "EURX": 8, "BTC": 8, "USDX": 8},
+  "symbols": {"BTC": "tBTC"},
+  "max_jump": 0.5,
+  "jump_rounds": 3,
+  "flat_rounds": 30,
+  "source": {"type": "http_bulk", "url": "http://127.0.0.1:8088/prices", "max_age": 300}
+}

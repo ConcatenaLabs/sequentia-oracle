@@ -1,0 +1,37 @@
+# The price-attestation signer, one instance per oracle key:
+#   systemctl enable --now sequentia-oracle-signer@1
+# reads /root/sequentia/oracle-signer/1.json. doc/runbook.md has the layout.
+[Unit]
+Description=Sequentia price-attestation signer %i
+Documentation=https://github.com/ConcatenaLabs/sequentia-oracle
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/sequentia/sequentia-oracle
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 -I /root/sequentia/sequentia-oracle/bin/sequentia-oracle-signer --config /root/sequentia/oracle-signer/%i.json
+Restart=always
+RestartSec=5
+# The key is the whole of this service's authority. It reads the key and the
+# feed and writes its logs; it listens on nothing.
+# 0022: the logs it publishes are for everyone; the key file is created 0600
+# whatever the umask, and its directory 0700.
+UMask=0022
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+# Its key directory, and the directory it publishes into. Nothing else under
+# /root is writable.
+ReadWritePaths=/root/sequentia/oracle-signer /root/sequentia/pignus-data
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+LockPersonality=yes
+RestrictRealtime=yes
+
+[Install]
+WantedBy=multi-user.target
