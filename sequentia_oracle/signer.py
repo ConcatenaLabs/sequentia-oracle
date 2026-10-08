@@ -30,7 +30,10 @@ from . import feed as F
 # setting that goes nowhere is one the operator believes is protecting them.
 CONFIG_KEYS = ("keyfile", "log_v1", "log_v2", "status", "interval", "formats",
                "markets", "assets", "precisions", "symbols", "precision",
-               "max_jump", "jump_rounds", "flat_rounds", "source")
+               "max_jump", "jump_rounds", "flat_rounds", "source", "beacon")
+
+# What a `beacon` section takes (doc/runbook.md, "The beacon").
+BEACON_KEYS = ("log", "rotate_every", "request")
 
 SOURCE_KEYS = {
     "static": {"type", "prices"},
@@ -267,6 +270,7 @@ class Signer:
         self.key = A.xonly_pubkey(self.sec)
         self._lock_fd = None
         self.latest = {}            # market -> (timestamp, price) last signed
+        self.signed_beacon = {}     # market -> the beacon its last record names
         self._flat = {}
         self._jump = {}
         self.errors = {}
@@ -275,6 +279,90 @@ class Signer:
         self.last_round = 0.0
         self.signed_at = {}
         self._restore()
+        self.beacon_cfg = cfg.get("beacon")
+        self.epochs = []
+        if self.beacon_cfg is not None:
+            self._open_beacon(base)
+
+    # -------------------------------------------------------------- beacon
+
+    def _open_beacon(self, base):
+        b = self.beacon_cfg
+        if not isinstance(b, dict):
+            raise ConfigError("`beacon` is an object: log, rotate_every, request")
+        odd = sorted(k for k in b if k not in BEACON_KEYS and not k.startswith("_"))
+        if odd:
+            raise ConfigError(f"`beacon` does not understand {', '.join(odd)}. It "
+                              f"takes: {', '.join(BEACON_KEYS)}")
+        if 2 not in self.formats:
+            raise ConfigError("a beacon is named by format-2 attestations; add 2 "
+                              "to `formats` or remove `beacon`")
+        logdir = os.path.dirname(os.path.abspath(self.log_v2))
+        self.beacon_log = b.get("log") or os.path.join(logdir, "beacon.log")
+        self.beacon_request = b.get("request") or os.path.join(logdir, "beacon-rotate.request")
+        self.rotate_every = float(b.get("rotate_every", 3600))
+        if self.rotate_every < 0:
+            raise ConfigError("beacon.rotate_every is seconds, 0 for on demand only")
+        records = read_tail(self.beacon_log) if os.path.exists(self.beacon_log) else []
+        if os.path.exists(self.beacon_log) and os.path.getsize(self.beacon_log) > TAIL_BYTES:
+            with open(self.beacon_log) as f:
+                records = [json.loads(line) for line in f if line.strip()]
+        try:
+            self.epochs = A.beacon_epochs(self.key, records)
+        except (ValueError, KeyError, TypeError) as e:
+            raise ConfigError(
+                f"{self.beacon_log} does not hold this key's beacon: {e}. It is "
+                f"the record every rotation is replayed from; restore it from the "
+                f"backup or from a publisher's copy, never edit it") from None
+        if not self.epochs:
+            if any(str(d.get("beacon", "0" * 64)) != "0" * 64
+                   for d in read_tail(self.log_v2)):
+                raise ConfigError(
+                    f"no beacon log at {self.beacon_log}, but this signer's "
+                    f"format-2 log names a beacon. Restore the beacon log: a new "
+                    f"epoch 0 would strand the beacon coins where they are")
+
+    def _append_epoch(self, frm):
+        """Start the next epoch: a fresh nonce, its program, and (after epoch
+        0) this key's signature moving the beacon there from `frm`. Durable
+        before anything is signed under it."""
+        nonce = os.urandom(32)
+        prog = A.beacon_program(self.key, nonce)
+        sig = A.rotation_sign(self.sec, frm, prog, aux=os.urandom(32)) if frm else None
+        now = int(time.time())
+        append_line(self.beacon_log,
+                    A.beacon_record(self.key, len(self.epochs), nonce, frm, sig, now))
+        self.epochs.append({"epoch": len(self.epochs), "nonce": nonce, "program": prog,
+                            "from": frm, "signature": sig, "time": now})
+        if frm:
+            say(f"beacon rotated to epoch {self.epochs[-1]['epoch']}, program "
+                f"{prog.hex()}; signing under it from now")
+        else:
+            say(f"beacon epoch 0 at program {prog.hex()}: fund it before a "
+                f"contract that checks freshness can use these attestations")
+
+    @property
+    def beacon(self):
+        return self.epochs[-1]["program"] if self.epochs else A.NO_BEACON
+
+    def maybe_rotate(self, now=None):
+        """Rotate when the epoch is `rotate_every` old, or when a request file
+        exists (whoever may write it may ask; the signer decides nothing else
+        from it, and removes it once the rotation is on record)."""
+        if not self.epochs:
+            return False
+        now = time.time() if now is None else now
+        asked = os.path.exists(self.beacon_request)
+        due = self.rotate_every and now - self.epochs[-1]["time"] >= self.rotate_every
+        if not (asked or due):
+            return False
+        self._append_epoch(self.epochs[-1]["program"])
+        if asked:
+            try:
+                os.unlink(self.beacon_request)
+            except FileNotFoundError:
+                pass
+        return True
 
     def lock(self):
         """One signer per log. Two writing the same logs would sign two
@@ -302,6 +390,7 @@ class Signer:
                 prev = self.latest.get(m)
                 if prev is None or int(d["time"]) >= prev[0]:
                     self.latest[m] = (int(d["time"]), int(d["price"]))
+                    self.signed_beacon[m] = bytes.fromhex(str(d.get("beacon") or "00" * 32))
 
     # -------------------------------------------------------------- signing
 
@@ -315,10 +404,15 @@ class Signer:
         if 2 in self.formats:
             b, q = market.split("/")
             v2 = A.AttestationV2(self.key, self.refs[b], self.refs[q], price,
-                                 self.precision, ts).sign(self.sec, aux=os.urandom(32))
+                                 self.precision, ts, self.beacon).sign(self.sec, aux=os.urandom(32))
         return v1, v2
 
     def tick(self):
+        if self.beacon_cfg is not None:
+            if not self.epochs:
+                self._append_epoch(None)
+            else:
+                self.maybe_rotate()
         try:
             self.source.refresh()
             source_error = None
@@ -355,19 +449,28 @@ class Signer:
                         f"is not signed")
                 price = prices[m]
                 self._jump_guard(m, price)
+                again = False
                 if self.latest.get(m) == (ts, price):
-                    continue           # this observation is already signed
+                    if self.signed_beacon.get(m, self.beacon) == self.beacon:
+                        continue       # this observation is already signed
+                    # Signed, but under the beacon just rotated away: the same
+                    # observation again in format 2 only, so the newest record
+                    # names a beacon a contract can still point at.
+                    again = True
                 if self.latest.get(m, (0, 0))[0] > ts:
                     raise RuntimeError(
                         f"the feed's time went backwards ({ts} after "
                         f"{self.latest[m][0]}); not signing a price older than "
                         f"one already published")
                 v1, v2 = self.sign_one(m, ts, price)
+                if again:
+                    v1 = None
                 if v2 is not None:
                     append_line(self.log_v2, v2.to_json(market=m))
                 if v1 is not None:
                     append_line(self.log_v1, A.v1_line(v1))
                 self.latest[m] = (ts, price)
+                self.signed_beacon[m] = self.beacon
                 self.signed_at[m] = time.time()
                 signed += 1
             except Exception as e:                 # noqa: BLE001 - reported
@@ -428,7 +531,13 @@ class Signer:
                             "error": self.errors.get(m)}
                         for m in self.markets},
             "logs": {"v1": self.log_v1 if 1 in self.formats else None,
-                     "v2": self.log_v2 if 2 in self.formats else None},
+                     "v2": self.log_v2 if 2 in self.formats else None,
+                     "beacon": self.beacon_log if self.epochs else None},
+            "beacon": None if not self.epochs else {
+                "epoch": self.epochs[-1]["epoch"],
+                "program": self.epochs[-1]["program"].hex(),
+                "since": self.epochs[-1]["time"],
+                "rotate_every": self.rotate_every},
         }
 
     def write_status(self):

@@ -34,6 +34,11 @@ def main():
     def asset(display):
         return A.asset_from_display(display)
 
+    # Key A's beacon: epoch 0 and the epoch it rotates to.
+    nonces = [h(f"sequentia-oracle/vector-beacon-nonce/{i}") for i in (0, 1)]
+    key_a = A.xonly_pubkey(keys["A"])
+    beacons = [A.BeaconScript(key_a, n) for n in nonces]
+
     cases = [
         # The attestation every proof uses: GOLD in USDX, 3,000 USDX atoms per
         # GOLD atom at precision 5 (the Pignus testnet's price scale of 1e5).
@@ -49,12 +54,15 @@ def main():
         # satoshi at 60,000 USD a bitcoin is 60,000 USD atoms of 1e-8 USD.
         ("btc_usd", "A", "BTC/USD", A.unit_id("BTC"), A.unit_id("USD"), 60_000, 0,
          1_790_000_060, A.NO_BEACON),
-        # A non-zero beacon, so every reader is proven to carry the field.
+        # The first observation under key A's beacon in epoch 0.
         ("gold_usdx_beacon", "A", "GOLD/USDX", asset(gold), asset(usdx), 300_000_000, 5,
-         1_790_000_000, h("vector beacon")),
+         1_790_000_000, beacons[0].program),
         # The largest values each field allows.
         ("limits", "A", "GOLD/USDX", asset(gold), asset(usdx), (1 << 63) - 1,
          A.MAX_PRECISION, (1 << 32) - 1, bytes([0xff]) * 32),
+        # The next observation, signed after the beacon rotated to epoch 1.
+        ("gold_usdx_beacon_1", "A", "GOLD/USDX", asset(gold), asset(usdx), 300_100_000, 5,
+         1_790_000_060, beacons[1].program),
     ]
     v2 = []
     for name, k, market, base, quote, price, precision, t, beacon in cases:
@@ -91,6 +99,32 @@ def main():
         {"name": "format_1_message", "message": v1[0]["message"], "reason": "142 bytes"},
     ]
 
+    epochs = []
+    for i, b in enumerate(beacons):
+        e = {"epoch": i, "nonce": b.nonce.hex(), "program": b.program.hex(),
+             "script_pubkey": b.script_pubkey.hex(), "merkle_root": b.merkle_root.hex(),
+             "recreate_leaf": b.recreate.hex(), "rotate_leaf": b.rotate.hex(),
+             "recreate_control_block": b.control_block("recreate").hex(),
+             "rotate_control_block": b.control_block("rotate").hex()}
+        if i:
+            frm = beacons[i - 1].program
+            sig = A.rotation_sign(keys["A"], frm, b.program)
+            assert A.rotation_verify(key_a, frm, b.program, sig)
+            e.update({"from": frm.hex(),
+                      "digest": A.rotation_digest(frm, b.program).hex(),
+                      "signature": sig.hex()})
+        epochs.append(e)
+    log = [json.loads(A.beacon_record(key_a, e["epoch"], bytes.fromhex(e["nonce"]),
+                                      bytes.fromhex(e["from"]) if i else None,
+                                      bytes.fromhex(e["signature"]) if i else None,
+                                      1_790_000_000 + 30 * i))
+           for i, e in enumerate(epochs)]
+    assert [x["program"] for x in A.beacon_epochs(key_a, log)] == [b.program for b in beacons]
+    beacon = {"tag": A.BEACON_TAG,
+              "tag_hash": hashlib.sha256(A.BEACON_TAG.encode()).hexdigest(),
+              "internal_key": A.NUMS.hex(), "leaf_version": A.TAPSCRIPT_LEAF,
+              "signer": "A", "epochs": epochs, "log": log}
+
     out = {
         "about": "Golden vectors for sequentia-oracle attestation formats 1 and 2 "
                  "(doc/format.md). Regenerate with tools/gen_vectors.py; never "
@@ -106,6 +140,7 @@ def main():
         "v2": v2,
         "v1": v1,
         "v2_refusals": refusals,
+        "beacon": beacon,
     }
     json.dump(out, sys.stdout, indent=1)
     sys.stdout.write("\n")

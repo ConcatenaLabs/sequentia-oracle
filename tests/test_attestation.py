@@ -101,7 +101,7 @@ class FormatTwo(unittest.TestCase):
             self.assertEqual(A.AttestationV2.from_dict(fresh.to_dict()), att)
 
     def test_every_byte_is_signed(self):
-        c = self.v["v2"][4]                  # the one with a non-zero beacon
+        c = self.v["v2"][4]                  # the one under a beacon
         msg = bytes.fromhex(c["message"])
         sig = bytes.fromhex(c["signature"])
         key = bytes.fromhex(c["key"])
@@ -139,6 +139,76 @@ class FormatTwo(unittest.TestCase):
         gold = self.v["assets_display"]["GOLD"]
         self.assertEqual(self.v["v2"][0]["base"], bytes.fromhex(gold)[::-1].hex())
         self.assertEqual(A.asset_to_display(A.asset_from_display(gold)), gold)
+
+
+class Beacon(unittest.TestCase):
+    def setUp(self):
+        self.v = load()
+        self.b = self.v["beacon"]
+        self.key = bytes.fromhex(self.v["keys"][self.b["signer"]]["key"])
+        self.sec = bytes.fromhex(self.v["keys"][self.b["signer"]]["secret"])
+
+    def test_constants(self):
+        import hashlib
+        self.assertEqual(self.b["tag"], A.BEACON_TAG)
+        self.assertEqual(self.b["tag_hash"], hashlib.sha256(A.BEACON_TAG.encode()).hexdigest())
+        self.assertEqual(self.b["internal_key"], A.NUMS.hex())
+        self.assertEqual(self.b["leaf_version"], 0xc4)
+
+    def test_every_epoch(self):
+        prev = None
+        for e in self.b["epochs"]:
+            bs = A.BeaconScript(self.key, bytes.fromhex(e["nonce"]))
+            self.assertEqual(bs.program.hex(), e["program"])
+            self.assertEqual(bs.script_pubkey.hex(), e["script_pubkey"])
+            self.assertEqual(bs.recreate.hex(), e["recreate_leaf"])
+            self.assertEqual(bs.rotate.hex(), e["rotate_leaf"])
+            self.assertEqual(bs.control_block("rotate").hex(), e["rotate_control_block"])
+            self.assertEqual(bs.control_block("recreate").hex(), e["recreate_control_block"])
+            if prev is not None:
+                self.assertEqual(e["from"], prev.hex())
+                self.assertEqual(A.rotation_digest(prev, bs.program).hex(), e["digest"])
+                sig = bytes.fromhex(e["signature"])
+                self.assertEqual(A.rotation_sign(self.sec, prev, bs.program), sig)
+                self.assertTrue(A.rotation_verify(self.key, prev, bs.program, sig))
+                self.assertFalse(A.rotation_verify(self.key, bs.program, prev, sig))
+                other = bytes.fromhex(self.v["keys"]["B"]["key"])
+                self.assertFalse(A.rotation_verify(other, prev, bs.program, sig))
+            prev = bs.program
+        named = [c for c in self.v["v2"] if c["name"].startswith("gold_usdx_beacon")]
+        self.assertEqual([c["beacon"] for c in named], [e["program"] for e in self.b["epochs"]])
+
+    def test_a_rotation_is_not_an_attestation(self):
+        """The same key signs both; the tags keep them apart."""
+        e = self.b["epochs"][1]
+        sig = bytes.fromhex(e["signature"])
+        att = A.AttestationV2.decode(bytes.fromhex(self.v["v2"][4]["message"]), sig)
+        self.assertFalse(att.verify(self.key))
+        c = self.v["v2"][4]
+        self.assertFalse(A.schnorr_verify(self.key, bytes.fromhex(e["digest"]),
+                                          bytes.fromhex(c["signature"])))
+
+    def test_the_log_is_checked(self):
+        log = self.b["log"]
+        self.assertEqual(len(A.beacon_epochs(self.key, log)), 2)
+
+        def refused(records, text, key=self.key):
+            with self.assertRaises(ValueError) as cm:
+                A.beacon_epochs(key, records)
+            self.assertIn(text, str(cm.exception))
+        refused(log, "another key", key=bytes.fromhex(self.v["keys"]["B"]["key"]))
+        refused(log[1:], "epoch 1 where 0")
+        refused([log[0], dict(log[1], signature="00" * 64)], "does not verify")
+        refused([log[0], dict(log[1], **{"from": "11" * 32})], "is not epoch 0's")
+        refused([dict(log[0], program="22" * 32)], "not its nonce's")
+        refused([dict(log[0], **{"from": log[1]["program"]})], "not a rotation")
+        # back to an old program, even with a valid signature for it
+        n0 = bytes.fromhex(log[0]["nonce"])
+        p0, p1 = bytes.fromhex(log[0]["program"]), bytes.fromhex(log[1]["program"])
+        back = json.loads(A.beacon_record(self.key, 2, n0, p1, A.rotation_sign(self.sec, p1, p0)))
+        refused(log + [back], "returns to an old program")
+        with self.assertRaises(ValueError):
+            A.rotation_digest(p0, p0)
 
 
 class FormatOne(unittest.TestCase):

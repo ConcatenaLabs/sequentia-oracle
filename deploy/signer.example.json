@@ -26,5 +26,7 @@
   "max_jump": 0.5,
   "jump_rounds": 3,
   "flat_rounds": 30,
-  "source": {"type": "http_bulk", "url": "http://127.0.0.1:8088/prices", "max_age": 300}
+  "source": {"type": "http_bulk", "url": "http://127.0.0.1:8088/prices", "max_age": 300},
+  "_beacon_note": "Sign every format-2 record under a beacon and rotate it every rotate_every seconds, or when the request file exists. The beacon log and the request file default to the directory of log_v2. doc/runbook.md, The beacon.",
+  "beacon": {"rotate_every": 3600}
 }
