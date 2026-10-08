@@ -235,6 +235,110 @@ class SignerTest(unittest.TestCase):
             b.lock()
         self.assertIn("another signer", str(cm.exception))
 
+    # ------------------------------------------------------------- the beacon
+
+    def beacon_cfg(self, **b):
+        return self.cfg(beacon=dict({"rotate_every": 0}, **b))
+
+    def read_beacon(self, s):
+        with open(s.beacon_log) as f:
+            return [json.loads(x) for x in f if x.strip()]
+
+    def test_every_record_names_the_current_beacon(self):
+        s = S.Signer(self.beacon_cfg(), create_key=True)
+        self.assertEqual(s.tick(), 2)
+        epochs = A.beacon_epochs(s.key, self.read_beacon(s))
+        self.assertEqual(len(epochs), 1)
+        b1 = epochs[0]["program"]
+        self.assertNotEqual(b1, A.NO_BEACON)
+        self.assertEqual(b1, A.BeaconScript(s.key, epochs[0]["nonce"]).program)
+        _, v2 = self.logs(s)
+        for d in v2:
+            att = A.AttestationV2.from_dict(d)
+            self.assertTrue(att.verify(s.key))
+            self.assertEqual(att.beacon, b1)
+        with open(s.status_path) as f:
+            st = json.load(f)
+        self.assertEqual(st["beacon"]["program"], b1.hex())
+        self.assertEqual(st["beacon"]["epoch"], 0)
+
+    def test_a_request_rotates_and_the_observation_is_signed_again(self):
+        s = S.Signer(self.beacon_cfg(), create_key=True)
+        s.tick()
+        observed = s.source.observed_at()
+        s.source.observed_at = lambda: observed
+        self.assertEqual(s.tick(), 0)             # nothing new, no request
+        with open(s.beacon_request, "w") as f:
+            f.write("")
+        self.assertEqual(s.tick(), 2)             # the same observation, new beacon
+        self.assertFalse(os.path.exists(s.beacon_request))
+        epochs = A.beacon_epochs(s.key, self.read_beacon(s))
+        self.assertEqual(len(epochs), 2)
+        b1, b2 = epochs[0]["program"], epochs[1]["program"]
+        self.assertTrue(A.rotation_verify(s.key, b1, b2, epochs[1]["signature"]))
+        v1, v2 = self.logs(s)
+        # format 1 has no beacon: its record is not written twice
+        self.assertEqual((len(v1), len(v2)), (2, 4))
+        olds = [A.AttestationV2.from_dict(d) for d in v2[:2]]
+        news = [A.AttestationV2.from_dict(d) for d in v2[2:]]
+        for o, n in zip(olds, news):
+            self.assertEqual((o.price, o.time, o.beacon), (n.price, n.time, b1))
+            self.assertEqual(n.beacon, b2)
+        self.assertEqual(s.tick(), 0)
+        # A restart finds epoch 1 and does not sign the observation a third time.
+        s2 = S.Signer(self.beacon_cfg())
+        self.assertEqual(s2.beacon, b2)
+        s2.source.refresh = lambda: None
+        s2.source._snapshot = s.source._snapshot
+        s2.source._fetched = s.source._fetched
+        s2.source._updated = s.source._updated
+        s2.source.observed_at = lambda: observed
+        self.assertEqual(s2.tick(), 0)
+
+    def test_the_schedule_rotates(self):
+        s = S.Signer(self.beacon_cfg(rotate_every=600), create_key=True)
+        s.tick()
+        t0 = s.epochs[-1]["time"]
+        self.assertFalse(s.maybe_rotate(now=t0 + 599))
+        self.assertTrue(s.maybe_rotate(now=t0 + 600))
+        self.assertEqual(len(A.beacon_epochs(s.key, self.read_beacon(s))), 2)
+        # every rotation is to a program never used before
+        for _ in range(3):
+            self.assertTrue(s.maybe_rotate(now=time.time() + 10_000))
+        progs = [e["program"] for e in A.beacon_epochs(s.key, self.read_beacon(s))]
+        self.assertEqual(len(set(progs)), 5)
+
+    def test_beacon_refusals(self):
+        def refused(cfg, text):
+            with self.assertRaises(SystemExit) as cm:
+                S.Signer(cfg, create_key=True)
+            self.assertIn(text, str(cm.exception))
+        refused(self.cfg(beacon={"every": 5}), "does not understand every")
+        refused(self.cfg(beacon={}, formats=[1]), "add 2 to `formats`")
+        s = S.Signer(self.beacon_cfg(), create_key=True)
+        s.tick()
+        with open(s.beacon_request, "w") as f:
+            f.write("")
+        s.tick()
+        log = s.beacon_log
+        with open(log) as f:
+            lines = f.read().splitlines()
+        # a rotation whose signature is another's
+        d = json.loads(lines[1])
+        d["signature"] = "00" * 64
+        with open(log, "w") as f:
+            f.write(lines[0] + "\n" + json.dumps(d) + "\n")
+        refused(self.beacon_cfg(), "rotation signature does not verify")
+        # a program its nonce does not derive
+        d = json.loads(lines[1])
+        d["nonce"] = "11" * 32
+        with open(log, "w") as f:
+            f.write(lines[0] + "\n" + json.dumps(d) + "\n")
+        refused(self.beacon_cfg(), "not its nonce's")
+        # the beacon log lost while the format-2 log names a beacon
+        os.unlink(log)
+        refused(self.beacon_cfg(), "Restore the beacon log")
+
     def test_the_command(self):
         path = os.path.join(self.dir, "signer.json")
         with open(path, "w") as f:

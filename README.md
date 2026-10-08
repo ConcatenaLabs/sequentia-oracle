@@ -13,10 +13,10 @@ that signs them.
 |---|---|
 | [`doc/format.md`](doc/format.md) | The attestation formats: format 2, a fixed 142-byte message that Simplicity and tapscript both check, and format 1, which Pignus loans originated against; with the reasoning for every field and what a signature can and cannot authorise |
 | `sequentia_oracle/attestation.py` | The reference implementation of both formats and of BIP340, Python standard library only, in one file that other projects vendor |
-| `vectors/attestations.json` | Golden vectors, written by `tools/gen_vectors.py`. The Rust reader in [`sequentia-contracts`](https://github.com/ConcatenaLabs/sequentia-contracts) reproduces them byte for byte, and its harness test `o1` spends one through a Simplicity leaf and a tapscript leaf on regtest |
-| `bin/sequentia-oracle-signer`, `sequentia_oracle/signer.py`, `sequentia_oracle/feed.py` | The signer: holds the key, reads a price feed, writes both formats to append-only logs. It serves nothing |
+| `vectors/attestations.json` | Golden vectors, written by `tools/gen_vectors.py`. The Rust reader in [`sequentia-contracts`](https://github.com/ConcatenaLabs/sequentia-contracts) reproduces them byte for byte, and its harness tests `o1` and `o2` spend them through a Simplicity leaf and a tapscript leaf on regtest, `o2` across a beacon rotation |
+| `bin/sequentia-oracle-signer`, `sequentia_oracle/signer.py`, `sequentia_oracle/feed.py` | The signer: holds the key, reads a price feed, writes both formats to append-only logs, and signs its beacon's rotations. It serves nothing |
 | [`doc/runbook.md`](doc/runbook.md), `deploy/` | Configuration, the systemd unit, and how it runs beside the web process that publishes the logs |
-| `tools/` | `gen_vectors.py`; `resolve_assets.py` (asset ids from a registry); `o1_set.py` (a signer's records as a set for the regtest proof) |
+| `tools/` | `gen_vectors.py`; `resolve_assets.py` (asset ids from a registry); `o1_set.py` and `o2_set.py` (a signer's records as a set for the regtest proofs) |
 
 ## Format 2 in one paragraph
 
@@ -27,7 +27,11 @@ that signs them.
 `base` and `quote` are Sequentia asset ids in internal byte order, or the ids
 of two units that are not Sequentia assets: native bitcoin (`BTC`) and the US
 dollar (`USD`). The value is `price / 10^precision` quote atoms per base atom.
-`beacon` is all zero until freshness through a beacon coin is specified.
+`beacon` is the program of the output script where the signer's beacon coins
+sit now. A contract that needs a fresh price spends one of those coins and
+hands it back; when the signer rotates, it moves them to a new script, and
+every attestation naming the old one stops verifying. All zero means no
+beacon. `doc/format.md`, "The beacon", has the script and the rule.
 
 ## Verifying an attestation
 
@@ -37,6 +41,8 @@ from sequentia_oracle.attestation import AttestationV2
 att = AttestationV2.from_dict(record)          # refuses a malformed record
 assert att.verify(pinned_key)                  # the key you trust, as bytes
 assert (att.base, att.quote, att.precision) == expected
+# fresh: att.beacon must hold a coin of the oracle's beacon asset now,
+# at output script 0x5120 || att.beacon (doc/format.md, "The beacon")
 price_num, price_den = att.value()
 ```
 

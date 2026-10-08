@@ -23,6 +23,10 @@ that are not obvious from the code. Node and consensus conventions live in the
   32-byte value handed to it: a handed-over hash can be a format-2 digest, and
   the signature would be an attestation of a price nobody observed
   (`doc/format.md`, "What a signature means").
+- **A beacon program is never used twice.** Each epoch draws a fresh nonce,
+  and `beacon_epochs` refuses a log that returns to an earlier program: coins
+  moved back to an old program would make every attestation that named it
+  verify again (`doc/format.md`, "The beacon").
 - **The signer serves nothing.** It writes logs and a status file; a separate
   web process publishes them and never reads the key. Do not add a listener to
   the signer, and do not give the web process a path to the key.

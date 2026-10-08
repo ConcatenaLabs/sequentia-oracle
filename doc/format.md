@@ -17,7 +17,7 @@ which the Rust reader in
 [`sequentia-contracts`](https://github.com/ConcatenaLabs/sequentia-contracts)
 (`crates/sequentia-contracts/src/attestation.rs`) reproduces byte for byte, and
 which a Simplicity program and a tapscript leaf accept on a regtest chain
-(that repository's harness test `o1`).
+(that repository's harness tests `o1`, and `o2` for the beacon).
 
 ## Format 2
 
@@ -34,7 +34,7 @@ A fixed-width message of 142 bytes:
 | 97 | 8 | `price` | unsigned integer, little-endian, `1 ≤ price < 2^63` |
 | 105 | 1 | `precision` | unsigned integer, `0 ≤ precision ≤ 18` |
 | 106 | 4 | `time` | Unix seconds, unsigned, little-endian |
-| 110 | 32 | `beacon` | 32 zero bytes, or a beacon commitment |
+| 110 | 32 | `beacon` | the program of the signer's beacon script, or 32 zero bytes |
 
 The value attested is
 
@@ -109,12 +109,12 @@ check it.
   SimplicityHL integer is big-endian; the helper reverses the bytes, which
   costs only combinators.
 - **`beacon`.** No script can read the current time, so nothing can require
-  that an attestation is recent: an old attestation from a dip can be replayed
-  later. The planned answer binds each attestation to a beacon coin that the
-  signer spends when it publishes a newer one; the 32 bytes are reserved for
-  the commitment that names the beacon. **All zero means no beacon**, which is
-  what every attestation carries until the beacon is specified, and a contract
-  that pins a zero beacon accepts only those.
+  that an attestation is recent: an old attestation from a dip could be
+  replayed later. The beacon binds each attestation to coins the signer moves
+  when it rotates, so a contract can require that the beacon it names is still
+  where it says. "The beacon" below defines it. **All zero means no beacon**:
+  the attestation makes no claim of freshness, and a contract that checks the
+  beacon refuses it.
 - **A tagged hash, signed as 32 bytes.** `jet::bip_0340_verify` takes a 32-byte
   message, so format 1's 48 bytes cannot be checked in Simplicity at all. The
   tag separates this signature from everything else the same key could sign
@@ -138,10 +138,11 @@ attestation never stands in for one.
 
 - **Another coin or contract:** accepted by design, as above.
 - **Another pair, precision, beacon or key:** refused; each is in the signed
-  bytes, and the contract supplies its own pinned values when it rebuilds them.
+  bytes, and the contract supplies its own pinned values (or, for the beacon,
+  the program of the coin it spends) when it rebuilds them.
 - **Another time:** the time is signed, but "too old" cannot be checked in a
-  script (the beacon exists for that). A contract checks "not before" against
-  a constant.
+  script. A contract checks "not before" against a constant, and checks the
+  beacon for "not since replaced".
 - **Another chain:** an asset id is chain-specific, so an attestation of
   Sequentia assets means nothing elsewhere. A pair of two units (BTC in USD) is
   the same fact on every chain and is valid wherever its key is trusted.
@@ -150,11 +151,13 @@ attestation never stands in for one.
   the nonce and the key, so messages of different lengths never share a
   challenge, and neither signature verifies as the other (tested in both
   directions, and refused in a block by both leaves in `o1`).
-- **Something else the key signs:** the oracle key also co-signs Pignus's
-  native-bitcoin seizures, as a BIP340 signature over a taproot signature hash.
-  That hash is tagged `TapSighash`; a Simplicity `sig_all_hash` hashes the
-  chain's genesis hash twice where a tag hash would go, over 132 bytes; a
-  format-2 digest is tagged `Sequentia/oracle/price`, over 206. Distinct
+- **Something else the key signs:** the oracle key also signs its beacon
+  rotations, over a digest tagged `Sequentia/oracle/beacon` (below), and
+  co-signs Pignus's native-bitcoin seizures, as a BIP340 signature over a
+  taproot signature hash. That hash is tagged `TapSighash`; a Simplicity
+  `sig_all_hash` hashes the chain's genesis hash twice where a tag hash would
+  go, over 132 bytes; a format-2 digest is tagged `Sequentia/oracle/price`,
+  over 206; a rotation digest is tagged `Sequentia/oracle/beacon`, over 128. Distinct
   prefixes give disjoint digests, so no attestation is a transaction signature
   and no transaction signature is an attestation. That holds only while the signer computes
   every 32 bytes it signs: a key that signs a 32-byte value it was handed
@@ -171,7 +174,7 @@ A record, as the signer logs it and a web process serves it:
  "message": "02…",
  "signature": "…",
  "key": "…", "base": "…", "quote": "…", "price": 300000000,
- "precision": 5, "time": 1790000000, "beacon": "00…00",
+ "precision": 5, "time": 1790000000, "beacon": "…",
  "market": "GOLD/USDX"}
 ```
 
@@ -187,10 +190,163 @@ not signed.
    to `quote`.
 3. Require that `key` is the key you trust (the one your contract or loan
    pins), then verify the BIP340 signature over the digest under it.
-4. Compare `base`, `quote`, `precision` and `beacon` with the ones you expect
-   before computing with `price`.
+4. Compare `base`, `quote` and `precision` with the ones you expect before
+   computing with `price`.
+5. For a fresh price, require a non-zero `beacon` that holds a coin of the
+   oracle's beacon asset now ("The beacon", "Checking a beacon off chain").
 
 `AttestationV2.decode`, `.from_dict` and `.verify(key)` do 1 to 3.
+
+## The beacon
+
+A price attestation is a public fact with a time on it, and a script cannot
+read the current time, so a contract cannot refuse an attestation for being
+old. The beacon makes "old" something a contract can see on chain: the signer
+keeps coins of a **beacon asset** at a **beacon script**, every attestation
+names that script, and when the signer **rotates** it moves every beacon coin
+to a new script. From that moment an attestation naming the old script has no
+coin to point at, and a contract that requires one refuses it.
+
+### The rule
+
+- The `beacon` field is the 32-byte witness program of the signer's current
+  beacon script: the output script is `OP_1 <beacon>`.
+- A contract that checks freshness pins the oracle's key, the pair, the
+  precision and the oracle's **beacon asset** (not one beacon: it must keep
+  accepting the oracle's attestations across rotations). Its spending
+  transaction must spend, at an input the witness names, an explicit coin of
+  the beacon asset whose output script is `OP_1 <beacon>`, where `beacon` is
+  the one in the signed message.
+- The signer rotates on a schedule and on demand. A rotation is durable in the
+  signer's beacon log before anything is signed under the new beacon, and from
+  then on the signer signs only the new one.
+- **A zero beacon** names no script that can hold the beacon asset, so a
+  contract that checks the beacon refuses it. A signer without a beacon signs
+  zero; a signer with one never does. A contract that does not check
+  freshness may still pin a zero beacon, and then accepts only attestations
+  from a signer without one.
+
+An attestation therefore verifies, in a contract that checks the beacon, from
+the moment its beacon's coins exist until the moment they are moved. A
+rotation is the signer saying "every price I signed before this is stale";
+how stale an accepted attestation can be is bounded by the rotation interval
+plus the time a rotation takes to confirm.
+
+### The beacon script
+
+One epoch's beacon script is a taproot output with the NUMS internal key
+`50929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac0` (BIP341's
+point with no known discrete logarithm: no key path) and two tapscript leaves
+(leaf version `0xc4`, Elements tagged hashes `TapLeaf/elements`,
+`TapBranch/elements`, `TapTweak/elements`):
+
+| Leaf | Who | What it requires, for the coin at input `k` |
+|---|---|---|
+| recreate | anyone | output `2k` has the same output script, the same asset and the same amount. Using the beacon leaves it where it was |
+| rotate | the oracle key | output `2k` is `OP_1 <to>` with the same asset and amount, and the witness carries the key's BIP340 signature over `SHA256(SHA256(T) ‖ SHA256(T) ‖ from ‖ to)`, `T = "Sequentia/oracle/beacon"`, where `from` is the coin's own program and `to` is in the witness |
+
+```
+recreate:  PUSHCURRENTINPUTINDEX INSPECTINPUTSCRIPTPUBKEY
+           PUSHCURRENTINPUTINDEX DUP ADD INSPECTOUTPUTSCRIPTPUBKEY ROT EQUALVERIFY EQUALVERIFY
+           (the same for INSPECTINPUTASSET/INSPECTOUTPUTASSET and INSPECTINPUTVALUE/INSPECTOUTPUTVALUE)
+           1
+
+rotate:    <nonce> DROP
+           PUSHCURRENTINPUTINDEX DUP ADD INSPECTOUTPUTSCRIPTPUBKEY 1 EQUALVERIFY OVER EQUALVERIFY
+           (asset and amount as in recreate)
+           PUSHCURRENTINPUTINDEX INSPECTINPUTSCRIPTPUBKEY DROP SWAP CAT
+           <SHA256(T) ‖ SHA256(T)> SWAP CAT SHA256 <key> CHECKSIGFROMSTACK
+           witness: <signature> <to>
+```
+
+The `nonce` is 32 random bytes the signer draws for each epoch. Nothing reads
+it; it is what makes each epoch's program new, so a rotation never returns to
+a script that held coins before. `sequentia_oracle/attestation.py`
+(`BeaconScript`, `rotation_digest`, `beacon_epochs`) is the reference, and
+the vectors carry two epochs of test key A's beacon with every leaf, control
+block, program and the rotation between them.
+
+Why each part is there:
+
+- **A beacon asset, not any coin at the script.** Anyone can pay any coin to
+  an old script; only the beacon asset cannot get there. The signer issues it
+  once with no reissuance token and pays the whole supply to the epoch-0
+  script, so every coin of it is at the current script or on its way there by
+  a rotation, and no other holder exists. A contract pins the asset and so
+  needs no constant that changes at a rotation.
+- **Anyone can use it.** A liquidation or a settlement is taken by whoever
+  acts, not by the oracle, so the coin it must spend cannot need the oracle's
+  signature. The recreate leaf lets every contract spend a beacon coin and
+  hand it back unchanged; several coins let several contracts settle in one
+  block.
+- **Output `2k` for input `k`.** One rule binds each beacon input to its own
+  output, so two beacon coins can never be satisfied by one recreated output
+  and the other taken; it is the same rule other covenants here use, so a
+  contract at input 0 keeps outputs 0 and 1 and a beacon at input 1 takes
+  output 2.
+- **The rotation signs `from` and `to`, nothing else.** It moves exactly one
+  epoch's coins to exactly one new script. The coin's own program is read by
+  the script, so the signature cannot move another epoch's coins, and it is
+  not bound to an outpoint, so a coin someone recreated a moment ago is still
+  moved by it. Anyone holding the signature can submit the rotation; it can
+  only do what the oracle signed. The amount and asset are kept, so it moves
+  nothing out.
+- **A program, not an outpoint.** An outpoint changes every time a contract
+  uses a beacon coin (the recreated coin is a new output), so an attestation
+  naming an outpoint would die at its first use, and anyone could kill every
+  attestation by spending the beacon and recreating it. A program is stable
+  under use and changes only when the oracle's key moves it. It is also what
+  both checks read without a conversion: tapscript's
+  `OP_INSPECTINPUTSCRIPTPUBKEY` returns the program itself, and a Simplicity
+  program hashes `0x5120 ‖ beacon` once and compares it with
+  `jet::input_script_hash`.
+- **No key path.** With one, the key could move the coins anywhere in one
+  signature, including back to an old script.
+
+The beacon coins are explicit (transparent), as a covenant that reads
+amounts needs. One atom per coin is enough: a node that does not price the
+beacon asset as a fee asset applies no dust limit to it.
+
+### What a rotation signature means
+
+It says one thing: "this key's beacon moves from program `from` to program
+`to`". It cannot authorise:
+
+- **Another epoch or a return.** The leaf puts the coin's own program in the
+  digest, so the signature moves only coins at `from`; a rotation from `to`
+  back to `from` is another digest, which the signer never signs (its log
+  refuses a program used before).
+- **Another destination or a theft.** The leaf checks the output against `to`
+  and keeps asset and amount.
+- **A price.** A rotation digest is tagged `Sequentia/oracle/beacon` and an
+  attestation digest `Sequentia/oracle/price`; neither signature verifies as
+  the other (tested both ways).
+
+### The beacon log
+
+The signer appends one JSON line per epoch:
+
+```json
+{"epoch":1,"from":"…","key":"…","nonce":"…","program":"…","signature":"…","time":1790000030}
+```
+
+Epoch 0 has `from` and `signature` null. `beacon_epochs(key, records)`
+checks a log: consecutive epochs, every program the one its nonce derives,
+every `from` the previous program, every signature this key's, no program
+twice. The log is public (it holds no secret) and is what a publisher
+replays rotations from: the nonce gives the leaves, and the leaves give the
+control block that spends a coin.
+
+### Checking a beacon off chain
+
+A reader with a node (a web process before it serves an attestation, a
+lending book before it computes with one) holds an attestation's beacon live
+when its node shows an unspent coin of the oracle's beacon asset at output
+script `OP_1 <beacon>`, in a block or in the mempool. That is the condition a
+contract checks when the spend is made, so the reader agrees with the chain
+rather than with the signer's log. A rotation that is signed but not yet
+broadcast leaves the newest attestations without a coin and the older ones
+still live: a reader shows both facts.
 
 ## Format 1
 
@@ -223,10 +379,14 @@ hand, holds:
 
 - two test keys, A and B, with their secrets (they must never sign anything
   real);
-- six format-2 attestations: GOLD in USDX by A, the same oracle and time for
+- seven format-2 attestations: GOLD in USDX by A, the same oracle and time for
   another pair, the same fields by B, native bitcoin in US dollars (two units,
-  precision 0), a non-zero beacon, and every field at its largest value; each
-  with its message, digest and signature (BIP340 with all-zero auxiliary
+  precision 0), the first observation under A's beacon in epoch 0, every field
+  at its largest value, and the next observation under A's beacon in epoch 1;
+  each with its message, digest and signature (BIP340 with all-zero auxiliary
   randomness, so every language derives the same bytes);
+- A's beacon in epochs 0 and 1: each epoch's nonce, leaves, control blocks,
+  merkle root and program, the rotation between them (digest and signature),
+  and the two lines of the beacon log that record them;
 - the format-1 attestation of the first observation;
 - nine messages a reader must refuse, each with the reason.

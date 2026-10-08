@@ -15,7 +15,8 @@ STRIKE to its price plus one, and needs, all from this signer:
   other_pair  a record of OTHER (refused: another pair),
   v1          the format-1 record of ok's observation (refused: the other format).
 So the signer must have signed MARKET at least three times, the middle price
-above the first and below the third.
+above the first and below the third, all under one beacon (o1 pins the beacon
+of `ok`; test o2 is the one that follows a rotation).
 """
 
 import argparse
@@ -41,8 +42,9 @@ def main():
     if not other:
         sys.exit(f"no record of {a.other}")
     for i, ok in enumerate(mine):
-        early = [d for d in mine[:i] if d["time"] < ok["time"] and d["price"] <= ok["price"]]
-        high = [d for d in mine[i + 1:] if d["time"] >= ok["time"] and d["price"] > ok["price"]]
+        same = [d for d in mine if d.get("beacon") == ok.get("beacon")]
+        early = [d for d in same if d["time"] < ok["time"] and d["price"] <= ok["price"]]
+        high = [d for d in same if d["time"] >= ok["time"] and d["price"] > ok["price"]]
         if not early or not high:
             continue
         v1 = [d for d in read(a.log_v1) if d.get("market") == a.market
