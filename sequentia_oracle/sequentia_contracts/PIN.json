@@ -1,0 +1,27 @@
+{
+ "_note": "Vendored from sequentia-contracts at this commit: the Python address mirror, and the oracle bond template with its program's source as compiled (its helper includes resolved, as `seqc expand` prints it, which is what the descriptor's source_sha256 hashes). Replace the files only with newer copies from that repository and update every field; tests/test_bond.py checks the hashes.",
+ "repository": "https://github.com/ConcatenaLabs/sequentia-contracts",
+ "commit": "bed76cd15b6bceb75bb5589017ed84f3b096d778",
+ "files": {
+  "sequentia_address.py": {
+   "from": "mirrors/python/sequentia_address.py",
+   "sha256": "5a8e7a9a66fd485cb9b1d984197c9f301231e8ccb86ecdbdf5f5a25217fdda78"
+  },
+  "templates/oracle_bond/descriptor.json": {
+   "from": "templates/oracle_bond/descriptor.json",
+   "sha256": "26e55e402c2586f234452f617bed589421e4849962a5888737e9c06c6cb44695"
+  },
+  "templates/oracle_bond/vectors.json": {
+   "from": "templates/oracle_bond/vectors.json",
+   "sha256": "9b110c394b920c54a382d0718651a80306bd8b07f8d5bb6953dc92d7599643b9"
+  },
+  "templates/oracle_bond/rules.json": {
+   "from": "templates/oracle_bond/rules.json",
+   "sha256": "c271830f1142d881b0a65a2cbc945cd45728f9f811b4b74bafb44f3a3c32614a"
+  },
+  "templates/oracle_bond/oracle_bond.simf": {
+   "from": "seqc expand templates/oracle_bond/oracle_bond.simf",
+   "sha256": "af182e2787dfe720039825af03d2cdcc0f9749428cc6b80d9e391ab84c7882de"
+  }
+ }
+}

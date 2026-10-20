@@ -1,0 +1,172 @@
+#!/usr/bin/env python3
+# Copyright (c) 2026 The Sequentia developers
+# Distributed under the MIT software license.
+"""Post, top up, give notice on and withdraw an oracle's bond. Holds no key.
+
+    sequentia-oracle-bond --config bond.json status
+    sequentia-oracle-bond --config bond.json post --amount 1000
+    sequentia-oracle-bond --config bond.json top-up --amount 250
+    sequentia-oracle-bond --config bond.json notice [--coin TXID:VOUT]
+    sequentia-oracle-bond --config bond.json withdraw --to ADDRESS [--coin TXID:VOUT]
+
+The bond's terms (key, asset, notice) are the last declaration on the
+signer's bond log, which the signer writes from its `bond` section. Notice and
+withdrawal need the key's signature on that log first; when it is missing,
+this prints the signer command that makes it. Coins and fees come from the
+wallet `wallet` names, never a reserve, SBTC, bridge or treasury wallet.
+doc/runbook.md, "The bond".
+"""
+
+import argparse
+import json
+import os
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), ".."))
+
+from sequentia_oracle import bond as B        # noqa: E402
+from sequentia_oracle import rpc as R         # noqa: E402
+
+CONFIG_KEYS = ("rpc", "wallet", "bond_log", "signer_config", "fee_asset", "seqc", "feerate")
+
+
+def load(path):
+    with open(path) as f:
+        cfg = json.load(f)
+    odd = sorted(k for k in cfg if k not in CONFIG_KEYS and not k.startswith("_"))
+    if odd:
+        raise SystemExit(f"{path}: unknown setting(s) {', '.join(odd)}. It takes: {', '.join(CONFIG_KEYS)}")
+    for k in ("rpc", "wallet", "bond_log"):
+        if k not in cfg:
+            raise SystemExit(f"{path}: `{k}` is required")
+    R.check_wallet_name(cfg["wallet"])
+    return cfg
+
+
+def say(msg):
+    print(f"sequentia-oracle-bond: {msg}", file=sys.stderr, flush=True)
+
+
+def outpoint(c):
+    return f"{c['txid']}:{c['vout']}"
+
+
+def signer_command(cfg, flag, coin, genesis, to=None):
+    sc = cfg.get("signer_config", "<the signer's config>")
+    cmd = f"sequentia-oracle-signer --config {sc} {flag} {outpoint(coin)} --genesis {genesis}"
+    return cmd + (f" --to {to}" if to else "")
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--config", required=True)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("status", help="the bond's coins, by state, from the node")
+    for name in ("post", "top-up"):
+        p = sub.add_parser(name, help="pay a coin of the bond's asset to the bond")
+        p.add_argument("--amount", required=True, help="whole units of the bond's asset")
+    p = sub.add_parser("notice", help="give notice on bonded coins")
+    p.add_argument("--coin", help="one coin, TXID:VOUT; default every bonded coin")
+    p = sub.add_parser("withdraw", help="withdraw coins whose notice has run")
+    p.add_argument("--to", required=True, help="the address the bond goes to")
+    p.add_argument("--coin", help="one coin, TXID:VOUT; default every coin whose notice has run")
+    a = ap.parse_args()
+
+    cfg = load(a.config)
+    node = R.Node.from_config(cfg["rpc"], wallet=cfg["wallet"])
+    log = B.read_log(cfg["bond_log"])
+    bonds = B.declared(log)
+    if not bonds:
+        raise SystemExit(f"{cfg['bond_log']} declares no bond: give the signer a `bond` section and start it")
+    bond = bonds[-1]
+    genesis = node.call("getblockhash", 0, wallet=False)
+    fee_asset = cfg.get("fee_asset") or bond.asset
+    feerate = int(cfg.get("feerate", B.DEFAULT_FEERATE_RFA_PER_KVB))
+
+    if a.cmd == "status":
+        mtp = B.chain_mtp(node)
+        out = {"key": bond.key.hex(), "template": B.TEMPLATE_HASH, "bonds": []}
+        for b in bonds:
+            cs = B.coins(node, b)
+            for c in cs:
+                if c["state"] == B.NOTICED:
+                    c["withdrawable_at"] = B.withdrawable_at(node, c, b)
+                    c["withdrawable"] = c["withdrawable_at"] is not None and c["withdrawable_at"] <= mtp
+            out["bonds"].append({
+                "asset": b.asset, "notice_seconds": B.notice_seconds(b.notice),
+                "bonded_script": b.spk(B.BONDED), "noticed_script": b.spk(B.NOTICED),
+                "current": b is bond,
+                "bonded_atoms": sum(c["amount"] for c in cs if c["state"] == B.BONDED),
+                "noticed_atoms": sum(c["amount"] for c in cs if c["state"] == B.NOTICED),
+                "coins": cs})
+        out["chain_median_time"] = mtp
+        print(json.dumps(out, indent=1, sort_keys=True))
+        return 0
+
+    if a.cmd in ("post", "top-up"):
+        have = [c for c in B.coins(node, bond) if c["state"] == B.BONDED]
+        if a.cmd == "post" and have:
+            raise SystemExit(f"the bond already holds {len(have)} coin(s); `top-up` adds another")
+        if a.cmd == "top-up" and not have:
+            raise SystemExit("the bond holds no coin yet; `post` makes the first")
+        addr = bond.address(B.BONDED, B.hrp_of(node))
+        txid = node.sendtoaddress(address=addr, amount=a.amount, assetlabel=bond.asset,
+                                  fee_asset_label=fee_asset)
+        say(f"{a.cmd}: {a.amount} of {bond.asset} to {addr} from wallet {cfg['wallet']}")
+        print(json.dumps({"txid": txid, "address": addr, "amount": a.amount, "asset": bond.asset}))
+        return 0
+
+    seqc = B.find_seqc(cfg.get("seqc"))
+    want_state = B.BONDED if a.cmd == "notice" else B.NOTICED
+    cs = [c for c in B.coins(node, bond) if c["state"] == want_state]
+    if a.coin:
+        cs = [c for c in cs if outpoint(c) == a.coin]
+        if not cs:
+            raise SystemExit(f"{a.coin} is not a {'bonded' if want_state == B.BONDED else 'noticed'} coin of this bond")
+    if not cs:
+        raise SystemExit("no coin to " + a.cmd)
+    to_script = None
+    if a.cmd == "withdraw":
+        info = node.getaddressinfo(a.to)
+        to_script = info["scriptPubKey"]
+        if to_script in (bond.spk(B.BONDED), bond.spk(B.NOTICED)):
+            raise SystemExit("--to is the bond itself")
+    missing, sent = [], []
+    mtp = B.chain_mtp(node)
+    for c in cs:
+        if a.cmd == "withdraw":
+            at = B.withdrawable_at(node, c, bond)
+            if at is None or at > mtp:
+                say(f"{outpoint(c)}: its notice runs until median time {at}; the chain is at {mtp}")
+                continue
+        recs = [r for r in log if r.get("kind") == a.cmd and r.get("txid") == c["txid"]
+                and int(r.get("vout", -1)) == c["vout"] and r.get("genesis") == genesis
+                and (to_script is None or r.get("to") == to_script) and B.record_ok(bond.key, r)]
+        if not recs:
+            missing.append(signer_command(cfg, "--bond-" + a.cmd, c, genesis, to_script))
+            continue
+        r = recs[-1]
+        if a.cmd == "notice":
+            s = B.compose_moved(node, bond, c, "notice", bond.spk(B.NOTICED), fee_asset, feerate)
+            s.finish(seqc, genesis, B.notice_path(r["signature"]))
+        else:
+            s = B.compose_moved(node, bond, c, "withdraw", to_script, fee_asset, feerate)
+            s.finish(seqc, genesis, B.withdraw_path(r["dest"], r["signature"]))
+        hexed = s.sign(node)
+        txid = node.sendrawtransaction(hexed)
+        sent.append({"coin": outpoint(c), "txid": txid, "fee": list(s.fee), "cost_milli": s.run.get("cost_milli")})
+        say(f"{a.cmd}: {outpoint(c)} in {txid}")
+    print(json.dumps({"sent": sent, "needs_signature": missing}, indent=1))
+    if missing:
+        say("the key has not signed for these coins; run on the signer's machine, then again here:")
+        for m in missing:
+            print(m, file=sys.stderr)
+        return 3
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except (B.BondError, R.RPCError) as e:
+        raise SystemExit(f"sequentia-oracle-bond: {e}")

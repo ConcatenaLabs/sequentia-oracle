@@ -1,0 +1,10 @@
+{
+  "_note": "The bond tool's config. It holds no key: the bond's terms and the key's signatures come from the signer's bond log. doc/runbook.md, The bond.",
+  "rpc": {"url": "http://127.0.0.1:18200", "cookie": "/root/.sequentia/test/.cookie"},
+  "_wallet_note": "The operating wallet that funds the bond and pays its fees. A name containing reserve, sbtc, bridge or treasury is refused.",
+  "wallet": "oracle-1-ops",
+  "bond_log": "/root/sequentia/pignus-data/bond.log",
+  "signer_config": "/root/sequentia/oracle-signer/1.json",
+  "_fee_note": "The asset fees are paid in; the bond's asset when absent. Nothing falls back to another asset.",
+  "seqc": "/root/sequentia/sequentia-contracts/target/release/seqc"
+}

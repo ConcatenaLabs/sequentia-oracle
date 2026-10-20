@@ -16,6 +16,10 @@ that signs them.
 | `vectors/attestations.json` | Golden vectors, written by `tools/gen_vectors.py`. The Rust reader in [`sequentia-contracts`](https://github.com/ConcatenaLabs/sequentia-contracts) reproduces them byte for byte, and its harness tests `o1` and `o2` spend them through a Simplicity leaf and a tapscript leaf on regtest, `o2` across a beacon rotation |
 | `bin/sequentia-oracle-signer`, `sequentia_oracle/signer.py`, `sequentia_oracle/feed.py` | The signer: holds the key, reads a price feed, writes both formats to append-only logs, and signs its beacon's rotations. It serves nothing |
 | [`doc/runbook.md`](doc/runbook.md), `deploy/` | Configuration, the systemd unit, and how it runs beside the web process that publishes the logs |
+| `sequentia_oracle/bond.py`, `bin/sequentia-oracle-bond` | The oracle's bond: its scripts from the key, the asset and the notice; the bond log; posting, topping up, notice and withdrawal from a named wallet, each spend run through the bond's program by `seqc`. Holds no key: the signer signs a bond coin's notice or withdrawal with `--bond-notice` or `--bond-withdraw` |
+| `sequentia_oracle/watcher.py`, `bin/sequentia-oracle-watcher` | Reads oracles' public logs and slashes a bond on two prices for one pair, precision and time |
+| `sequentia_oracle/sequentia_contracts/` | sequentia-contracts' oracle bond template and its Python address mirror, vendored and pinned by `PIN.json` |
+| `sequentia_oracle/tx.py`, `sequentia_oracle/rpc.py` | Sequentia transactions with explicit outputs, and a node's JSON-RPC |
 | `tools/` | `gen_vectors.py`; `resolve_assets.py` (asset ids from a registry); `o1_set.py` and `o2_set.py` (a signer's records as a set for the regtest proofs) |
 
 ## Format 2 in one paragraph
@@ -55,16 +59,34 @@ python3 bin/sequentia-oracle-signer --config signer.json --print-pubkey
 ```
 
 [`doc/runbook.md`](doc/runbook.md) covers the configuration, the key, the unit
-file and retiring format 1.
+file, the bond, the watcher and retiring format 1.
+
+## The bond
+
+An oracle can stand behind its attestations with a bond: coins of any asset
+in a covenant that anyone slashes with two of the oracle's attestations of one
+pair, precision and time at two prices, half burned and half to whoever shows
+them, and that the oracle's key withdraws only after giving notice and waiting
+it out. `doc/format.md`, "The bond", says what the key signs for it and what a
+bond does and does not deter.
+
+```sh
+sequentia-oracle-bond --config bond.json post --amount 1000     # from a named operating wallet
+sequentia-oracle-bond --config bond.json status
+sequentia-oracle-watcher --config watcher.json                  # slash any oracle's conflict
+```
 
 ## Tests
 
 ```sh
 python3 tests/test_attestation.py   # BIP340's own vectors, the golden vectors, every refusal
 python3 tests/test_signer.py        # the signer against a local feed
+python3 tests/test_bond.py          # the bond's rule, signatures and scripts, the watcher's index, the codec
+SEQUENTIAD=… SEQC=… python3 tests/test_bond_regtest.py   # bond, notice, withdrawal and slash on regtest
 ```
 
-Python 3.10 or later, standard library only.
+Python 3.10 or later, standard library only. The bond tool and the watcher
+also need a node's RPC and sequentia-contracts' `seqc`.
 
 ## License
 

@@ -137,18 +137,33 @@ class SignerTest(unittest.TestCase):
         observed = s.source.observed_at()
         s.source.observed_at = lambda: observed
         self.assertEqual(s.tick(), 0)
+        # A new price stamped with a time already signed is a second price for
+        # one pair and time: the conflict that slashes the bond. Not signed.
         FEED["GOLD"] = {"price": 3100}
-        self.assertEqual(s.tick(), 1)
-        # A restarted signer reads its logs back and does not sign it again.
+        self.assertEqual(s.tick(), 0)
+        self.assertIn("conflict that slashes", s.errors["GOLD/USDX"])
+        # Signed once the feed's time moves on: both markets, at the new time.
+        s.source.observed_at = lambda: observed + 1
+        self.assertEqual(s.tick(), 2)
+        # A restarted signer reads its logs back and does not sign it again,
+        # nor a second price at that time.
         s2 = S.Signer(self.cfg())
         s2.source.refresh = lambda: None
         s2.source._snapshot = s.source._snapshot
         s2.source._fetched = s.source._fetched
         s2.source._updated = s.source._updated
-        s2.source.observed_at = lambda: observed
+        s2.source.observed_at = lambda: observed + 1
+        self.assertEqual(s2.tick(), 0)
+        FEED["GOLD"] = {"price": 3200}
+        s2.source.refresh()
         self.assertEqual(s2.tick(), 0)
         v1, v2 = self.logs(s2)
-        self.assertEqual((len(v1), len(v2)), (3, 3))
+        self.assertEqual((len(v1), len(v2)), (4, 4))
+        # No two records of the log are a conflict.
+        by = {}
+        for d in v2:
+            k = (d["base"], d["quote"], d["precision"], d["time"])
+            self.assertEqual(by.setdefault(k, d["price"]), d["price"], k)
 
     def test_formats_can_be_one_or_the_other(self):
         s = S.Signer(self.cfg(formats=[2]), create_key=True)

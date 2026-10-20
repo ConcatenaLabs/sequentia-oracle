@@ -29,3 +29,5 @@ jobs:
         run: python3 tests/test_attestation.py
       - name: the signer
         run: python3 tests/test_signer.py
+      - name: the bond and the watcher
+        run: python3 tests/test_bond.py
