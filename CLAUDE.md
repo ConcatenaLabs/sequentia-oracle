@@ -30,6 +30,16 @@ that are not obvious from the code. Node and consensus conventions live in the
 - **The signer serves nothing.** It writes logs and a status file; a separate
   web process publishes them and never reads the key. Do not add a listener to
   the signer, and do not give the web process a path to the key.
+- **Never two prices for one pair and time.** Two format-2 attestations by
+  one key of one base, quote, precision and time at two prices slash the
+  key's bond (`doc/format.md`, "The bond"). The signer refuses a second price
+  at a time it has signed and two markets of one pair, and locks its key file:
+  keep all three, and never run one key in two signers.
+- **The bond's covenant is sequentia-contracts'.** `sequentia_oracle/sequentia_contracts/`
+  is a pinned copy (`PIN.json`); a newer template comes from that repository
+  with every hash in the pin updated, never as an edit here. A bond digest is
+  tagged `Sequentia/oracle/bond` and built by the signer from an outpoint, a
+  genesis hash and a destination script.
 - **Every refusal is tested.** A guard (precisions, asset ids, the jump guard,
   the frozen-feed guard, the key file's mode, one signer per log) lands with
   the test that shows it refuses.
@@ -39,8 +49,11 @@ that are not obvious from the code. Node and consensus conventions live in the
 
 ## Working in this repository
 
-- `python3 tests/test_attestation.py && python3 tests/test_signer.py` is the
-  gate before every pull request (CI runs the same). With `SEQUENTIA_SRC`
+- `python3 tests/test_attestation.py && python3 tests/test_signer.py && python3 tests/test_bond.py`
+  is the gate before every pull request (CI runs the same). A change to the
+  bond, the signer's guards or the watcher also runs
+  `SEQUENTIAD=<node> SEQC=<seqc> python3 tests/test_bond_regtest.py`, which
+  needs a built node and seqc and so does not run in CI. With `SEQUENTIA_SRC`
   pointing at a node checkout, one more test compares BIP340 over every message
   length with the node's test framework.
 - Pull requests go against `main`.

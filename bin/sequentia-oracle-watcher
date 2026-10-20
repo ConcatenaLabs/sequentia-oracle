@@ -1,0 +1,38 @@
+#!/usr/bin/env python3
+# Copyright (c) 2026 The Sequentia developers
+# Distributed under the MIT software license.
+"""Watch oracles' public logs and slash a bond on two prices for one pair and time.
+
+    sequentia-oracle-watcher --config watcher.json            watch every interval
+    sequentia-oracle-watcher --config watcher.json --once     one round, print what it slashed
+
+Holds no oracle key. It needs a node (to find bond coins and send slashes),
+`seqc` (to run the bond program on each slash before sending it) and a wallet
+that receives the presenter's half. doc/runbook.md, "The watcher".
+"""
+
+import argparse
+import json
+import os
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), ".."))
+
+from sequentia_oracle import watcher as W     # noqa: E402
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--config", required=True)
+    ap.add_argument("--once", action="store_true", help="one round, then exit")
+    a = ap.parse_args()
+    w = W.Watcher(W.load_config(a.config))
+    if a.once:
+        print(json.dumps({"slashed": w.round(), "conflicts": len(w.state["conflicts"])}, indent=1))
+        return 0
+    w.run_forever()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

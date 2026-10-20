@@ -7,6 +7,8 @@
     sequentia-oracle-signer --config signer.json --once      sign one round, exit
     sequentia-oracle-signer --config signer.json --print-pubkey
     sequentia-oracle-signer --config signer.json --create-key --once
+    sequentia-oracle-signer --config signer.json --bond-notice TXID:VOUT --genesis HASH
+    sequentia-oracle-signer --config signer.json --bond-withdraw TXID:VOUT --to SCRIPT --genesis HASH
 
 See doc/runbook.md for the configuration and the deployment beside a web
 process that publishes the logs.
@@ -31,13 +33,28 @@ def main():
     ap.add_argument("--create-key", action="store_true",
                     help="make a new key at `keyfile` if there is none and this "
                          "signer has never signed (its logs are empty)")
+    ap.add_argument("--bond-notice", metavar="TXID:VOUT",
+                    help="sign the notice on this bond coin, put it on the bond log, print it")
+    ap.add_argument("--bond-withdraw", metavar="TXID:VOUT",
+                    help="sign the withdrawal of this bond coin to --to, put it on the bond log, print it")
+    ap.add_argument("--to", metavar="SCRIPT", help="the withdrawal's destination scriptPubKey, hex")
+    ap.add_argument("--genesis", metavar="HASH", help="the chain's genesis block hash, as the node prints it")
     args = ap.parse_args()
     cfg = S.load_config(args.config)
     sig = S.Signer(cfg, create_key=args.create_key)
     if args.print_pubkey:
         print(sig.key.hex())
         return 0
+    if args.bond_notice or args.bond_withdraw:
+        if not args.genesis:
+            raise SystemExit("--genesis names the chain the coin is on")
+        kind = "notice" if args.bond_notice else "withdraw"
+        rec = sig.sign_bond(kind, args.bond_notice or args.bond_withdraw, args.genesis,
+                            args.to if kind == "withdraw" else None)
+        print(json.dumps(rec, sort_keys=True))
+        return 0
     sig.lock()
+    sig.declare_bond()
     S.say(f"key {sig.key.hex()}; formats {sig.formats}; {len(sig.markets)} "
           f"markets every {sig.interval:g}s; logs {sig.log_v1} and {sig.log_v2}")
     if args.once:

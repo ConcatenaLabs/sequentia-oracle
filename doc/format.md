@@ -152,12 +152,15 @@ attestation never stands in for one.
   challenge, and neither signature verifies as the other (tested in both
   directions, and refused in a block by both leaves in `o1`).
 - **Something else the key signs:** the oracle key also signs its beacon
-  rotations, over a digest tagged `Sequentia/oracle/beacon` (below), and
-  co-signs Pignus's native-bitcoin seizures, as a BIP340 signature over a
-  taproot signature hash. That hash is tagged `TapSighash`; a Simplicity
-  `sig_all_hash` hashes the chain's genesis hash twice where a tag hash would
-  go, over 132 bytes; a format-2 digest is tagged `Sequentia/oracle/price`,
-  over 206; a rotation digest is tagged `Sequentia/oracle/beacon`, over 128. Distinct
+  rotations, over a digest tagged `Sequentia/oracle/beacon` (below), its
+  bond's notices and withdrawals, over digests tagged `Sequentia/oracle/bond`
+  ("The bond", below), and co-signs Pignus's native-bitcoin seizures, as a
+  BIP340 signature over a taproot signature hash. That hash is tagged
+  `TapSighash`; a Simplicity `sig_all_hash` hashes the chain's genesis hash
+  twice where a tag hash would go, over 132 bytes; a format-2 digest is tagged
+  `Sequentia/oracle/price`, over 206; a rotation digest is tagged
+  `Sequentia/oracle/beacon`, over 128; a bond digest is tagged
+  `Sequentia/oracle/bond`, over 133 or 165. Distinct
   prefixes give disjoint digests, so no attestation is a transaction signature
   and no transaction signature is an attestation. That holds only while the signer computes
   every 32 bytes it signs: a key that signs a 32-byte value it was handed
@@ -347,6 +350,67 @@ contract checks when the spend is made, so the reader agrees with the chain
 rather than with the signer's log. A rotation that is signed but not yet
 broadcast leaves the newest attestations without a coin and the older ones
 still live: a reader shows both facts.
+
+## The bond
+
+An oracle can put coins behind its format-2 attestations: a bond, held by
+the covenant `templates/oracle_bond` of
+[`sequentia-contracts`](https://github.com/ConcatenaLabs/sequentia-contracts)
+(its `docs/oracle-bond.md` is the specification). The covenant pins the key,
+the bond's asset and a notice, and a coin is bonded or in notice.
+
+### The conflict
+
+Two format-2 attestations by one key, of one base, quote, precision and
+time, at two prices, are a **conflict**: the oracle said two things about one
+observation. Anyone who has both burns at least half of every coin of the
+key's bond and keeps the rest. The beacons are not compared, since a signer
+that rotates signs its newest observation again under the new beacon at the
+same price. Prices at two precisions are two feeds, not a conflict: an honest
+signer rounds differently at each.
+
+A conflict is what a bond deters. It does not deter a single consistent false
+price, nor a false price at a time the oracle published nothing for, nor one
+at another precision; and it costs the oracle at least the burned half, since
+it can present its own conflict and take the other.
+
+The signer therefore never signs a second price for a pair and time it has
+signed (it refuses, and waits for the feed's time to move), refuses two
+markets of one pair, and runs one key in one signer.
+
+### What the key signs for its bond
+
+```
+notice    = tagged("Sequentia/oracle/bond", 0x01 || genesis || txid || vout)
+withdraw  = tagged("Sequentia/oracle/bond", 0x02 || genesis || txid || vout || dest)
+```
+
+`genesis` is the chain's genesis block hash and `txid` the coin's transaction
+id, both in internal byte order (the reverse of the hex an RPC prints); `vout`
+is four bytes big-endian; `dest` is the SHA-256 of the destination's
+scriptPubKey. A notice moves exactly one bonded coin into notice; a withdrawal
+moves exactly one coin whose notice has run, to exactly that script, on
+exactly that chain. Neither is a price, a rotation or a transaction
+signature (the tags differ), and the signer builds both digests itself from
+the outpoint, the genesis hash and the destination script.
+
+### The bond log
+
+The signer appends one JSON line per event to its bond log, published with
+its other logs:
+
+```json
+{"kind":"bond","key":"…","asset":"…","notice":"00401000","notice_seconds":2097152,
+ "template":"36e09201…","bonded":"5120…","noticed":"5120…","time":1790000000}
+{"kind":"notice","key":"…","genesis":"…","txid":"…","vout":0,"digest":"…","signature":"…","time":…}
+{"kind":"withdraw","key":"…","genesis":"…","txid":"…","vout":0,"to":"…","dest":"…","digest":"…","signature":"…","time":…}
+```
+
+A `bond` line declares the bond's terms: the asset as an RPC prints it, the
+notice as its `nSequence` value, the template's hash, and the two scripts
+(bonded, in notice) they derive. A reader derives the scripts itself and
+refuses a line whose scripts disagree, then finds the bond's coins at them.
+`sequentia_oracle/bond.py` reads and writes the log.
 
 ## Format 1
 

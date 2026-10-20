@@ -24,16 +24,20 @@ import sys
 import time
 
 from . import attestation as A
+from . import bond as B
 from . import feed as F
 
 # Every top-level key a signer config may have. Anything else is refused: a
 # setting that goes nowhere is one the operator believes is protecting them.
 CONFIG_KEYS = ("keyfile", "log_v1", "log_v2", "status", "interval", "formats",
                "markets", "assets", "precisions", "symbols", "precision",
-               "max_jump", "jump_rounds", "flat_rounds", "source", "beacon")
+               "max_jump", "jump_rounds", "flat_rounds", "source", "beacon", "bond")
 
 # What a `beacon` section takes (doc/runbook.md, "The beacon").
 BEACON_KEYS = ("log", "rotate_every", "request")
+
+# What a `bond` section takes (doc/runbook.md, "The bond").
+BOND_KEYS = ("asset", "notice", "log")
 
 SOURCE_KEYS = {
     "static": {"type", "prices"},
@@ -235,10 +239,19 @@ class Signer:
                     "names each side of a pair by its asset id (or unit:BTC, "
                     "unit:USD), so every asset in `markets` needs one.")
             self.refs = {s: asset_ref(assets[s], s) for s in need}
+            pairs = {}
             for m in self.markets:
                 b, q = m.split("/")
                 if self.refs[b] == self.refs[q]:
                     raise ConfigError(f"{m}: both sides name the same asset")
+                pair = (self.refs[b], self.refs[q])
+                if pair in pairs:
+                    raise ConfigError(
+                        f"{pairs[pair]} and {m} name the same pair of assets: two "
+                        f"markets of one pair would sign two prices for one pair "
+                        f"and time whenever the feed prices them apart, and those "
+                        f"two attestations slash this oracle's bond")
+                pairs[pair] = m
         self.aliases = {k.upper(): v for k, v in cfg.get("symbols", {}).items()}
         self.interval = float(cfg.get("interval", 60))
         static = (cfg.get("source") or {}).get("type") == "static"
@@ -283,6 +296,77 @@ class Signer:
         self.epochs = []
         if self.beacon_cfg is not None:
             self._open_beacon(base)
+        self.bond = None
+        self.bond_log = None
+        if cfg.get("bond") is not None:
+            self._open_bond()
+
+    # ---------------------------------------------------------------- bond
+
+    def _open_bond(self):
+        b = self.cfg["bond"]
+        if not isinstance(b, dict):
+            raise ConfigError("`bond` is an object: asset, notice, log")
+        odd = sorted(k for k in b if k not in BOND_KEYS and not k.startswith("_"))
+        if odd:
+            raise ConfigError(f"`bond` does not understand {', '.join(odd)}. It takes: "
+                              f"{', '.join(BOND_KEYS)}")
+        if 2 not in self.formats:
+            raise ConfigError("a bond stands behind format-2 attestations; add 2 to `formats`")
+        for k in ("asset", "notice"):
+            if k not in b:
+                raise ConfigError(f"bond.{k} is required")
+        try:
+            self.bond = B.Bond(self.key, str(b["asset"]), B.notice_sequence(int(b["notice"])))
+        except (B.BondError, ValueError) as e:
+            raise ConfigError(f"bond: {e}") from None
+        if B.notice_seconds(self.bond.notice) < B.SHORT_NOTICE:
+            say(f"bond notice is {B.notice_seconds(self.bond.notice)} seconds, under a week: a "
+                f"watcher has that long to slash a conflict after notice is given")
+        logdir = os.path.dirname(os.path.abspath(self.log_v2))
+        self.bond_log = b.get("log") or os.path.join(logdir, "bond.log")
+
+    def declare_bond(self):
+        """Put the bond's terms on the bond log, unless they are the last
+        declared: the log is where readers learn the bond's scripts."""
+        if self.bond is None:
+            return None
+        try:
+            have = B.declared(B.read_log(self.bond_log), self.key)
+        except (B.BondError, ValueError, KeyError) as e:
+            raise ConfigError(f"{self.bond_log} is not this key's bond log: {e}") from None
+        if have and have[-1].same(self.bond):
+            return None
+        rec = self.bond.declaration()
+        append_line(self.bond_log, json.dumps(rec, sort_keys=True, separators=(",", ":")))
+        say(f"bond declared: {rec['asset']} with {rec['notice_seconds']}s notice at script "
+            f"{rec['bonded']}")
+        return rec
+
+    def sign_bond(self, kind, outpoint, genesis, to_script=None):
+        """One signature for one bond coin, on record before it is printed:
+        a notice, or a withdrawal to `to_script`. The digest is built here
+        from the outpoint, the chain and the destination; nothing handed over
+        is signed as it is."""
+        try:
+            txid, vout = outpoint.split(":")
+            if len(bytes.fromhex(txid)) != 32 or len(bytes.fromhex(genesis)) != 32:
+                raise ValueError
+            vout = int(vout)
+            if to_script is not None:
+                bytes.fromhex(to_script)
+        except ValueError:
+            raise ConfigError("give the coin as TXID:VOUT, the genesis hash as 64 hex "
+                              "characters and the destination as a script in hex") from None
+        if (kind == "withdraw") != (to_script is not None):
+            raise ConfigError("a withdrawal names its destination script; a notice names none")
+        if self.bond_log is None:
+            raise ConfigError("no `bond` in the config: this signer has no bond log to "
+                              "put the signature on")
+        rec = B.sign_record(self.sec, kind, genesis.lower(), txid.lower(), vout,
+                            to_script.lower() if to_script else None)
+        append_line(self.bond_log, json.dumps(rec, sort_keys=True, separators=(",", ":")))
+        return rec
 
     # -------------------------------------------------------------- beacon
 
@@ -365,8 +449,11 @@ class Signer:
         return True
 
     def lock(self):
-        """One signer per log. Two writing the same logs would sign two
-        attestations for one observation, and each would be published."""
+        """One signer per log, and one per key file. Two writing the same logs
+        would sign two attestations for one observation, and each would be
+        published; two signing with one key into two logs would sign two
+        prices for one observation the first time their feeds disagree, which
+        is the conflict that slashes the key's bond."""
         path = self.log_v2 + ".lock"
         self._lock_fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
         try:
@@ -374,6 +461,13 @@ class Signer:
         except OSError:
             raise ConfigError(f"another signer holds {path}; refusing to sign "
                               f"the same logs twice") from None
+        kpath = os.path.abspath(self.cfg["keyfile"]) + ".lock"
+        self._key_lock_fd = os.open(kpath, os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            fcntl.flock(self._key_lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            raise ConfigError(f"another signer holds {kpath}: it signs with this key "
+                              f"into other logs. One key, one signer") from None
 
     def _restore(self):
         """The last price each market was signed at, from the logs, so a
@@ -462,6 +556,13 @@ class Signer:
                         f"the feed's time went backwards ({ts} after "
                         f"{self.latest[m][0]}); not signing a price older than "
                         f"one already published")
+                if m in self.latest and self.latest[m][0] == ts and self.latest[m][1] != price:
+                    raise RuntimeError(
+                        f"already signed {m} at time {ts} at price "
+                        f"{self.latest[m][1]}; the feed now says {price} for the "
+                        f"same time. Two prices for one pair and time are a "
+                        f"conflict that slashes this oracle's bond, so the second "
+                        f"is not signed")
                 v1, v2 = self.sign_one(m, ts, price)
                 if again:
                     v1 = None
@@ -538,6 +639,11 @@ class Signer:
                 "program": self.epochs[-1]["program"].hex(),
                 "since": self.epochs[-1]["time"],
                 "rotate_every": self.rotate_every},
+            "bond": None if self.bond is None else {
+                "asset": self.bond.asset, "notice": "%08x" % self.bond.notice,
+                "notice_seconds": B.notice_seconds(self.bond.notice),
+                "template": B.TEMPLATE_HASH, "bonded": self.bond.spk(B.BONDED),
+                "noticed": self.bond.spk(B.NOTICED), "log": self.bond_log},
         }
 
     def write_status(self):

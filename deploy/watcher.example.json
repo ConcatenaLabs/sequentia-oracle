@@ -1,0 +1,12 @@
+{
+  "_note": "The watcher's config. It holds no oracle key; the wallet receives the presenter's half of each slash. doc/runbook.md, The watcher.",
+  "rpc": {"url": "http://127.0.0.1:18200", "cookie": "/root/.sequentia/test/.cookie"},
+  "wallet": "watcher",
+  "seqc": "/root/sequentia/sequentia-contracts/target/release/seqc",
+  "state": "/var/lib/sequentia-oracle-watcher/state.json",
+  "interval": 60,
+  "oracles": [
+    {"name": "oracle-1", "key": "0000000000000000000000000000000000000000000000000000000000000001",
+     "logs": ["https://pignus.example/v2/log/raw"], "bond_log": "https://pignus.example/v2/bond/log"}
+  ]
+}

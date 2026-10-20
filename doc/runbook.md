@@ -13,6 +13,7 @@ price feed ──► sequentia-oracle-signer ──► attestations.log      (fo
                 (holds the key)        ──► attestations-v2.log   (format 2)
                                        ──► signer-status.json
                                        ──► beacon.log            (rotations)
+                                       ──► bond.log              (the bond's terms, notices, withdrawals)
                                                  │
                                                  ▼
                                    pignus-oracle (web, no key) ──► /v1/…, /v2/…
@@ -33,6 +34,7 @@ layout, one instance per oracle key; instance `1` is the primary:
 | `/root/sequentia/pignus-data/signer-status.json` | the last round: per market its time, price or error; the feed's state; the key; the current beacon | the signer |
 | `/root/sequentia/pignus-data/beacon.log` | one line per beacon epoch: nonce, program, rotation signature | the signer |
 | `/root/sequentia/pignus-data/beacon-rotate.request` | present when someone asked for a rotation; removed once it is done | the publisher or the operator |
+| `/root/sequentia/pignus-data/bond.log` | one line per bond declaration, notice and withdrawal the key signed | the signer |
 
 The web process's unit makes `/root/sequentia/oracle-signer` inaccessible to
 it (`InaccessiblePaths=`), so it cannot read a key even by mistake. Other
@@ -66,13 +68,18 @@ read is refused at start; keys that start with `_` are comments.
 | `flat_rounds` | 30 (0 for `static`) | after this many rounds in which every market came back unchanged, the feed is called frozen and nothing is signed |
 | `source` | required | `{"type": "http_bulk", "url": …, "max_age": 300, "feed_max_age": …}`, `{"type": "http", …}` or `{"type": "static", "prices": {…}}` |
 | `beacon` | none | `{"rotate_every": 3600, "log": …, "request": …}`: sign under a beacon (below). Without it, format-2 records carry a zero beacon |
+| `bond` | none | `{"asset": …, "notice": 2592000, "log": …}`: the bond this key stands behind its format-2 records with (below) |
 
 A price is the reference price of one whole BASE unit divided by one whole
 QUOTE unit, converted to atoms per atom with the two precisions and multiplied
 by `10^precision`. A round prices every market from one snapshot of the feed.
 An observation (the feed's own `_meta.updated`, else the time it was read)
 is signed once, so a feed that stops moving produces nothing that looks
-fresh. A plain-http feed on another machine is refused unless the source says
+fresh. A feed that changes a price without changing its time is not signed
+again at that time: two prices for one pair and time are the conflict that
+slashes the bond, so the signer says so and waits for the feed's time to move.
+Two markets that name the same pair of assets are refused at start for the
+same reason. A plain-http feed on another machine is refused unless the source says
 `"insecure": true`.
 
 `tools/resolve_assets.py` reads asset ids from an asset registry's minimal
@@ -106,7 +113,10 @@ are what format 2 signs:
 The journal says each transition once: a market that stops being signed and
 why, a feed that stops answering or freezes, and their recovery. Five failed
 rounds in a row exit the process for systemd to restart. A second signer on the
-same logs is refused (`another signer holds …lock`).
+same logs, or on the same key file, is refused (`another signer holds …lock`).
+Never run one key in two signers, on one machine or two, nor on two chains:
+the first time their feeds disagree they sign two prices for one observation,
+and a price of two units (BTC in USD) is the same fact on every chain.
 
 Checks:
 
@@ -148,6 +158,81 @@ accept a record only while its beacon's coins are where it says.
   chain of rotations) or is missing while its format-2 log names a beacon:
   restore it from the backup or from a publisher's copy (`/v2/beacon/log` on
   `pignus-oracle`).
+
+## The bond
+
+A bond is coins of any asset at sequentia-contracts' `templates/oracle_bond`
+for this key ([`format.md`](format.md), "The bond"). Anyone who shows two of
+the key's format-2 attestations of one pair, precision and time with two
+prices burns half of every coin and keeps the rest; the key takes the coins
+back only after giving notice on chain and waiting `notice` seconds by each
+coin's own relative lock. It deters the conflict and nothing else: a single
+consistent false price is no conflict.
+
+| `bond` key | Default | What |
+|---|---|---|
+| `asset` | required | the asset the bond is held in, as the node prints it |
+| `notice` | required | seconds between notice and withdrawal, rounded up to 512; at most about 388 days. The signer warns below a week, the least a watcher should be given |
+| `log` | `bond.log` beside `log_v2` | the bond log, published with the other logs |
+
+At start the signer writes the bond's terms to the bond log (a `"kind":"bond"`
+line with the key, the asset, the notice, the template hash and the two
+scripts) unless they are the last ones there. Readers derive the bond's
+scripts from that line and find its coins on chain. New terms are a new line;
+coins at the old scripts stay the old bond's until they move.
+
+The coins move through `bin/sequentia-oracle-bond`, which holds no key: it
+reads the bond's terms from the bond log, and the key's signatures from the
+same log. Its configuration (`deploy/bond.example.json`) names the node's RPC
+(a cookie file, or a user and a file holding the password), the wallet that
+pays (`wallet`; a name containing reserve, sbtc, bridge or treasury is
+refused), `bond_log`, `signer_config` (for the commands it prints), the
+`fee_asset` (default: the bond's asset; nothing falls back to another) and
+`seqc`, sequentia-contracts' command line, which runs the bond's program
+against each spend before it is sent.
+
+    sequentia-oracle-bond --config bond.json status               # coins by state; when each in notice can go
+    sequentia-oracle-bond --config bond.json post --amount 1000   # the first coin
+    sequentia-oracle-bond --config bond.json top-up --amount 250  # another coin at the same script
+
+Notice and withdrawal take two steps, because the key signs on the signer's
+machine and nothing else holds it. The tool prints the signer command when the
+signature is missing (exit 3); run it, then the tool again:
+
+    sequentia-oracle-bond --config bond.json notice --coin TXID:VOUT
+    sequentia-oracle-signer --config 1.json --bond-notice TXID:VOUT --genesis GENESIS
+    sequentia-oracle-bond --config bond.json notice --coin TXID:VOUT
+
+    sequentia-oracle-bond --config bond.json withdraw --to ADDRESS --coin TXID:VOUT
+    sequentia-oracle-signer --config 1.json --bond-withdraw TXID:VOUT --to SCRIPT --genesis GENESIS
+    sequentia-oracle-bond --config bond.json withdraw --to ADDRESS --coin TXID:VOUT
+
+The signer one-shots write the signature to the bond log before they print it,
+and sign a digest they build from the outpoint, the genesis hash and the
+destination script; they sign nothing they are handed. `withdraw` refuses a
+coin whose notice has not run (the chain would too: `non-BIP68-final`), and
+a coin in notice can still be slashed until it is withdrawn.
+
+## The watcher
+
+`bin/sequentia-oracle-watcher` reads oracles' public logs and slashes a bond
+when it finds two of the key's attestations of one pair, precision and time
+with two prices. It holds no oracle key. For each oracle its configuration
+(`deploy/watcher.example.json`) gives the key, the places its format-2 records
+are published (a path, a publisher's `/v2/log/raw`, or any other record of
+attestations, such as one copied out of a liquidation) and its bond log. It
+counts a record only when its signature is the key's over its message, keeps
+every record it has seen for `retain_days` (40), and on a conflict slashes
+every coin of every bond the oracle declared: half burned, the rest to
+`pay_to` (or a new address of its wallet), the fee paid in the bond's asset
+from that half, or in `fee_asset` by the wallet when the node does not take
+the bond's asset.
+
+    sequentia-oracle-watcher --config watcher.json --once   # one round; prints what it slashed
+    sequentia-oracle-watcher --config watcher.json          # every `interval` seconds
+
+Its `state` file holds the records seen, the conflicts and the coins slashed;
+losing it costs only a re-read of the logs.
 
 ## Retiring format 1
 
