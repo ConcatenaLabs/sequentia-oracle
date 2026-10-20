@@ -9,6 +9,7 @@
     sequentia-oracle-signer --config signer.json --create-key --once
     sequentia-oracle-signer --config signer.json --bond-notice TXID:VOUT --genesis HASH
     sequentia-oracle-signer --config signer.json --bond-withdraw TXID:VOUT --to SCRIPT --genesis HASH
+    sequentia-oracle-signer --config signer.json --sign-registry-record record.json
 
 See doc/runbook.md for the configuration and the deployment beside a web
 process that publishes the logs.
@@ -21,6 +22,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), ".."))
 
+from sequentia_oracle import registry as R   # noqa: E402
 from sequentia_oracle import signer as S     # noqa: E402
 
 
@@ -39,11 +41,23 @@ def main():
                     help="sign the withdrawal of this bond coin to --to, put it on the bond log, print it")
     ap.add_argument("--to", metavar="SCRIPT", help="the withdrawal's destination scriptPubKey, hex")
     ap.add_argument("--genesis", metavar="HASH", help="the chain's genesis block hash, as the node prints it")
+    ap.add_argument("--sign-registry-record", metavar="FILE",
+                    help="sign this key's version 2 registry record (its beacon asset and its bond as the bond "
+                         "log declares it) and print {record, signature}")
     args = ap.parse_args()
     cfg = S.load_config(args.config)
     sig = S.Signer(cfg, create_key=args.create_key)
     if args.print_pubkey:
         print(sig.key.hex())
+        return 0
+    if args.sign_registry_record:
+        with open(args.sign_registry_record) as f:
+            record = json.load(f)
+        try:
+            R.check(record, sig.key, sig.bond)
+        except R.RecordError as e:
+            raise SystemExit(f"not signed: {e}")
+        print(json.dumps(R.sign(sig.sec, record), sort_keys=True))
         return 0
     if args.bond_notice or args.bond_withdraw:
         if not args.genesis:

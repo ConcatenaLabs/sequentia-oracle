@@ -213,6 +213,31 @@ destination script; they sign nothing they are handed. `withdraw` refuses a
 coin whose notice has not run (the chain would too: `non-BIP68-final`), and
 a coin in notice can still be slashed until it is withdrawn.
 
+## The registry record
+
+A Sequentia registry (sequentia-registry, "Oracle keys") lists this key with
+its feeds, its operator, where its attestations are published, its beacon
+asset and its bond's terms. The record is signed by the key, so the signer
+signs it:
+
+    sequentia-oracle-signer --config 1.json --sign-registry-record record.json > signed.json
+
+It signs a version 2 record only: one that names this signer's key, its
+`attestation_tag` (`Sequentia/oracle/price`), a `beacon_asset`, and, when the
+config has a `bond`, that bond exactly as the bond log declares it
+(`template`, `asset`, `notice`, `notice_seconds`, and the two scripts
+`bonded` and `noticed`), with an optional `log`, the https URL where the bond
+log is published. A record that names another key, misstates the bond or
+leaves it out is refused (`not signed: …`) and nothing is printed. The
+signature is BIP340 over the tagged hash (tag
+`sequentia-registry/oracle-key/v1`) of the record's canonical JSON (keys
+sorted, no whitespace); no attestation, bond digest or beacon rotation is
+signed under that tag. `vectors/registry-record.json` is a record signed with
+a public test key, which the registry's tests verify. Post the output to the
+registry's `POST /oracles` (with the domain proof) or, as its operator,
+`POST /admin/oracles`; the registry derives the bond's scripts again from the
+key, the asset and the notice and refuses a record whose scripts differ.
+
 ## The watcher
 
 `bin/sequentia-oracle-watcher` reads oracles' public logs and slashes a bond

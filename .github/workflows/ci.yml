@@ -31,3 +31,5 @@ jobs:
         run: python3 tests/test_signer.py
       - name: the bond and the watcher
         run: python3 tests/test_bond.py
+      - name: the registry record
+        run: python3 tests/test_registry.py

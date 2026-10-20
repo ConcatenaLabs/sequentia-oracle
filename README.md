@@ -17,6 +17,7 @@ that signs them.
 | `bin/sequentia-oracle-signer`, `sequentia_oracle/signer.py`, `sequentia_oracle/feed.py` | The signer: holds the key, reads a price feed, writes both formats to append-only logs, and signs its beacon's rotations. It serves nothing |
 | [`doc/runbook.md`](doc/runbook.md), `deploy/` | Configuration, the systemd unit, and how it runs beside the web process that publishes the logs |
 | `sequentia_oracle/bond.py`, `bin/sequentia-oracle-bond` | The oracle's bond: its scripts from the key, the asset and the notice; the bond log; posting, topping up, notice and withdrawal from a named wallet, each spend run through the bond's program by `seqc`. Holds no key: the signer signs a bond coin's notice or withdrawal with `--bond-notice` or `--bond-withdraw` |
+| `sequentia_oracle/registry.py`, `vectors/registry-record.json` | The key's record in a Sequentia registry (its feeds, beacon asset and bond's terms), which the signer signs with `--sign-registry-record`, and a record signed with a public test key that the registry's tests verify |
 | `sequentia_oracle/watcher.py`, `bin/sequentia-oracle-watcher` | Reads oracles' public logs and slashes a bond on two prices for one pair, precision and time |
 | `sequentia_oracle/sequentia_contracts/` | sequentia-contracts' oracle bond template and its Python address mirror, vendored and pinned by `PIN.json` |
 | `sequentia_oracle/tx.py`, `sequentia_oracle/rpc.py` | Sequentia transactions with explicit outputs, and a node's JSON-RPC |
@@ -82,6 +83,7 @@ sequentia-oracle-watcher --config watcher.json                  # slash any orac
 python3 tests/test_attestation.py   # BIP340's own vectors, the golden vectors, every refusal
 python3 tests/test_signer.py        # the signer against a local feed
 python3 tests/test_bond.py          # the bond's rule, signatures and scripts, the watcher's index, the codec
+python3 tests/test_registry.py      # the registry record the signer signs, and what it refuses
 SEQUENTIAD=… SEQC=… python3 tests/test_bond_regtest.py   # bond, notice, withdrawal and slash on regtest
 ```
 
