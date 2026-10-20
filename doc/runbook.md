@@ -36,7 +36,15 @@ layout, one instance per oracle key; instance `1` is the primary:
 
 The web process's unit makes `/root/sequentia/oracle-signer` inaccessible to
 it (`InaccessiblePaths=`), so it cannot read a key even by mistake. Other
-instances use `2.json`, `2/oracle.key` and their own log paths.
+instances use `2.json`, `2/oracle.key` and paths of their own for every file
+in the table: `attestations-2.log`, `attestations-2-v2.log`,
+`signer-status-2.json`, and, in the `beacon` section, `"log":
+".../beacon-2.log"` and `"request": ".../beacon-rotate-2.request"`. The beacon
+log and the request file default to fixed names beside `log_v2`, so instances
+whose logs share a directory would otherwise share them: a second signer
+refuses a beacon log that holds another key's epochs, and a request file is
+taken by whichever signer reads it first, which rotates that signer's beacon
+rather than the one asked for.
 
 ## Configuration
 
