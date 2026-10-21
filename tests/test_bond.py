@@ -194,6 +194,21 @@ class Conflicts(unittest.TestCase):
                 f.write(text)
             self.assertEqual([r["message"] for r in W.fetch(p)], [r["message"] for r in recs], name)
 
+    def test_a_log_of_one_line(self):
+        """A log holding one record (a bond log with its declaration and
+        nothing else yet, a format-2 log with its first record) is that one
+        record, not an object without records."""
+        rec = att(SEC_A, 300, 1)
+        decl = B.Bond(KEY_A, "bb" * 32, B.notice_sequence(30 * 86400)).declaration()
+        for name, line in (("att", rec), ("bond", decl)):
+            p = os.path.join(self.dir, name + ".log")
+            with open(p, "w") as f:
+                f.write(json.dumps(rec if name == "att" else decl, sort_keys=True) + "\n")
+            self.assertEqual(W.fetch(p), [line], name)
+        p = os.path.join(self.dir, "bond.log")
+        self.assertEqual([b.key for b in B.declared(W.fetch(p), KEY_A)], [KEY_A],
+                         "the watcher finds the bond of a log that holds only its declaration")
+
 
 class SignerBond(unittest.TestCase):
     def setUp(self):

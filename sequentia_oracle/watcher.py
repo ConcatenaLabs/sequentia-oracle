@@ -74,7 +74,10 @@ def fetch(source, timeout=20):
         try:
             v = json.loads(text)
             if isinstance(v, dict):
-                v = v.get("attestations", v.get("log", []))
+                # An object that holds the records, or a log of one line: the
+                # record itself (a bond log that declares its bond and has
+                # nothing else yet is exactly that).
+                v = v["attestations"] if "attestations" in v else v["log"] if "log" in v else [v]
             return [d for d in v if isinstance(d, dict)]
         except ValueError:
             pass                     # newline-delimited JSON starts with { too
