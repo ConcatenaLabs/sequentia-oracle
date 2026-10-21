@@ -185,11 +185,13 @@ The coins move through `bin/sequentia-oracle-bond`, which holds no key: it
 reads the bond's terms from the bond log, and the key's signatures from the
 same log. Its configuration (`deploy/bond.example.json`) names the node's RPC
 (a cookie file, or a user and a file holding the password), the wallet that
-pays (`wallet`; a name containing reserve, sbtc, bridge or treasury is
-refused), `bond_log`, `signer_config` (for the commands it prints), the
+pays (`wallet`; a name containing reserve, sbtc, bridge, treasury, compages,
+seqpal, escrow, beacon or faucet is refused), `bond_log`, `signer_config` (for the commands it prints), the
 `fee_asset` (default: the bond's asset; nothing falls back to another) and
 `seqc`, sequentia-contracts' command line, which runs the bond's program
-against each spend before it is sent.
+against each spend before it is sent, and `feerate`, in the fee asset's
+reference units per 1,000 vB (default 2000): every send states it, so a node
+with no fallback fee takes it.
 
     sequentia-oracle-bond --config bond.json status               # coins by state; when each in notice can go
     sequentia-oracle-bond --config bond.json post --amount 1000   # the first coin

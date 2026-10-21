@@ -13,7 +13,7 @@ The bond's terms (key, asset, notice) are the last declaration on the
 signer's bond log, which the signer writes from its `bond` section. Notice and
 withdrawal need the key's signature on that log first; when it is missing,
 this prints the signer command that makes it. Coins and fees come from the
-wallet `wallet` names, never a reserve, SBTC, bridge or treasury wallet.
+wallet `wallet` names, never a reserve, SBTC, bridge or treasury wallet, nor another service's.
 doc/runbook.md, "The bond".
 """
 
@@ -110,8 +110,10 @@ def main():
         if a.cmd == "top-up" and not have:
             raise SystemExit("the bond holds no coin yet; `post` makes the first")
         addr = bond.address(B.BONDED, B.hrp_of(node))
+        # The rate is stated, never left to the wallet's estimate: a node with
+        # no fallback fee refuses a send that has none.
         txid = node.sendtoaddress(address=addr, amount=a.amount, assetlabel=bond.asset,
-                                  fee_asset_label=fee_asset)
+                                  fee_asset_label=fee_asset, fee_rate=feerate / 1000)
         say(f"{a.cmd}: {a.amount} of {bond.asset} to {addr} from wallet {cfg['wallet']}")
         print(json.dumps({"txid": txid, "address": addr, "amount": a.amount, "asset": bond.asset}))
         return 0

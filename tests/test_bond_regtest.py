@@ -84,7 +84,9 @@ class BondOnRegtest(unittest.TestCase):
              f"-port={cls.p2p}", "-listen=0", "-connect=0", "-server", "-par=1",
              "-initialfreecoins=2100000000000000", "-anyonecanspendaremine=1", "-blindedaddresses=0",
              "-con_default_blinded_addresses=0", "-validatepegin=0", "-con_parent_chain_signblockscript=51",
-             "-con_any_asset_fees=1", "-evbparams=simplicity:-1:::", "-fallbackfee=0.0001"],
+             "-con_any_asset_fees=1", "-evbparams=simplicity:-1:::", "-fallbackfee=0"],
+            # No fallback fee, as on the testnet's nodes: every send the tools
+            # make states its rate, and only the test's own funder carries one.
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         cls.cookie = os.path.join(data, "elementsregtest", ".cookie")
         cls.url = f"http://127.0.0.1:{cls.rpcport}"
@@ -135,6 +137,7 @@ class BondOnRegtest(unittest.TestCase):
         ev = self.ev
         self.funder = self.wallet("funder")
         self.funder.rescanblockchain()
+        self.funder.call("settxfee", 0.00002)
         self.mine(1)
         bond_asset = self.funder.call("issueasset", assetamount=100000, tokenamount=0, blind=False,
                                       fee_asset="bitcoin")["asset"]
@@ -173,6 +176,10 @@ class BondOnRegtest(unittest.TestCase):
         self.assertNotEqual(bad.returncode, 0)
         self.assertIn("refusing wallet 'treasury2026'", bad.stderr)
         ev["refuses_treasury_wallet"] = bad.stderr.strip().splitlines()[-1]
+        for svc in ("compages", "seqpal-escrow", "pignus-beacon-1"):
+            bad = run(tool, "--config", self.write("bond-bad.json", dict(tool_cfg, wallet=svc)), "status", ok=False)
+            self.assertIn(f"refusing wallet '{svc}'", bad.stderr)
+        ev["refuses_service_wallets"] = bad.stderr.strip().splitlines()[-1]
         run(tool, "--config", cfg, "post", "--amount", "1000")
         self.mine()
         again = run(tool, "--config", cfg, "post", "--amount", "1", ok=False)

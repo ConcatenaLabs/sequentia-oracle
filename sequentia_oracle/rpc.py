@@ -14,10 +14,11 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-# Wallets that hold reserves, a bridge's or a treasury's coins: the bond tool
-# funds and pays fees from the wallet it is told to, and never from one of
-# these, so a typo cannot move them.
-REFUSED_WALLETS = re.compile(r"reserve|sbtc|bridge|treasury", re.I)
+# Wallets that hold reserves, a bridge's or a treasury's coins, and the wallets
+# of other services (a bridge such as Compages, an escrow such as SeqPal's, a
+# beacon, a faucet): the bond tool funds and pays fees from the wallet it is
+# told to, and never from one of these, so a typo cannot move them.
+REFUSED_WALLETS = re.compile(r"reserve|sbtc|bridge|treasury|compages|seqpal|escrow|beacon|faucet", re.I)
 
 
 class RPCError(Exception):
@@ -30,8 +31,9 @@ def check_wallet_name(name):
     if not name or not isinstance(name, str):
         raise SystemExit("name the wallet that pays: `wallet` in the config")
     if REFUSED_WALLETS.search(name):
-        raise SystemExit(f"refusing wallet {name!r}: a reserve, SBTC, bridge or treasury wallet "
-                         "never funds a bond or pays its fees. Name an operating wallet")
+        raise SystemExit(f"refusing wallet {name!r}: a reserve, SBTC, bridge or treasury wallet, or "
+                         "another service's (Compages, an escrow, a beacon, a faucet), never funds a bond "
+                         "or pays its fees. Name an operating wallet")
     return name
 
 
