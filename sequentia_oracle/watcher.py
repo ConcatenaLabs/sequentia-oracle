@@ -110,6 +110,19 @@ def signed_by(key, d):
                                  "time": int.from_bytes(m[106:110], "little")}
 
 
+def indexed(seen, d):
+    """Whether the record `d` is in the index exactly (its message and signature): one an
+    earlier run verified and kept, which needs no second verification after a restart."""
+    try:
+        m = bytes.fromhex(d["message"])
+        if len(m) != A.MESSAGE_LEN:
+            return False
+        r = seen.get(B.feed_of(m), {}).get(str(int.from_bytes(m[97:105], "little")))
+    except (KeyError, ValueError, TypeError):
+        return False
+    return bool(r) and r.get("message") == d.get("message") and r.get("signature") == d.get("signature")
+
+
 class Watcher:
     def __init__(self, cfg, node=None):
         self.cfg = cfg
@@ -128,12 +141,17 @@ class Watcher:
         self._checked = set()
 
     def save(self):
+        # written only when something in it changed: the index holds weeks of records, and
+        # rewriting and fsyncing it every round cost more than the round itself
+        if not self.__dict__.get("_dirty", True):
+            return
         tmp = self.state_path + ".tmp"
         with open(tmp, "w") as f:
             json.dump(self.state, f, sort_keys=True)
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp, self.state_path)
+        self._dirty = False
 
     def pay_to_script(self):
         if self._pay_to is None:
@@ -158,14 +176,19 @@ class Watcher:
                 if ck in checked:
                     continue
                 checked.add(ck)
+                if indexed(seen, d):
+                    continue        # verified by an earlier run: its index kept it
                 got = signed_by(key, d)
                 if got is None:
                     continue
                 feed, price, rec = got
-                seen.setdefault(feed, {}).setdefault(str(price), rec)
+                if str(price) not in seen.setdefault(feed, {}):
+                    seen[feed][str(price)] = rec
+                    self._dirty = True
         cutoff = time.time() - self.retain
         for feed in [f for f, ps in seen.items() if all(r["time"] < cutoff for r in ps.values())]:
             del seen[feed]
+            self._dirty = True
         return {f: ps for f, ps in seen.items() if len(ps) >= 2}
 
     def bonds(self, oracle):
@@ -189,6 +212,7 @@ class Watcher:
             entry = {"oracle": oracle["key"], "feed": feed, "records": [r1, r2]}
             if entry not in self.state["conflicts"]:
                 self.state["conflicts"].append(entry)
+                self._dirty = True
                 say(f"{name}: CONFLICT, two prices for one pair and time: {sorted(prices, key=int)[:2]}")
             if genesis is None:
                 genesis = self.node.call("getblockhash", 0, wallet=False)
@@ -202,6 +226,7 @@ class Watcher:
                     s.finish(B.find_seqc(self.cfg.get("seqc")), genesis, B.slash_path(r1, r2))
                     txid = self.node.sendrawtransaction(s.sign(self.node))
                     self.state["slashed"][op] = txid
+                    self._dirty = True
                     slashed.append({"oracle": oracle["key"], "coin": op, "txid": txid,
                                     "burned": s.tx.vout[0].amount, "to_presenter": s.tx.vout[1].amount,
                                     "fee": list(s.fee)})

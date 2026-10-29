@@ -13,6 +13,7 @@ import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 sys.path.insert(0, ROOT)
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 
 from sequentia_oracle import watcher as W         # noqa: E402
 
@@ -61,3 +62,38 @@ class VerifiesOnce(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Restarts(unittest.TestCase):
+    """A restart verifies nothing an earlier run indexed, and a round that changes
+    nothing writes nothing."""
+
+    def test_a_restart_verifies_only_what_is_new(self):
+        import test_bond as TB
+        d = tempfile.mkdtemp()
+        log = os.path.join(d, "attestations.log")
+        t = 1790000000
+        with open(log, "w") as f:
+            for i in range(20):
+                f.write(json.dumps(TB.att(TB.SEC_A, 300 + i, t + 60 * i)) + "\n")
+        oracle = {"key": TB.KEY_A.hex(), "logs": [log], "name": "o"}
+        state = os.path.join(d, "state.json")
+        calls = []
+        real = W.signed_by
+        W.signed_by = lambda key, rec: calls.append(rec) or real(key, rec)
+        try:
+            w = W.Watcher({"state": state, "retain_days": 100000}, node=FakeNode())
+            w.read(oracle); w.save()
+            self.assertEqual(len(calls), 20, "the first run verifies every record")
+            seen = sum(len(v) for v in w.state["seen"][oracle["key"]].values())
+            self.assertEqual(seen, 20)
+            mtime = os.stat(state).st_mtime_ns
+            w.read(oracle); w.save()
+            self.assertEqual(os.stat(state).st_mtime_ns, mtime, "a round that changes nothing writes nothing")
+            w2 = W.Watcher({"state": state, "retain_days": 100000}, node=FakeNode())   # a restart
+            with open(log, "a") as f:
+                f.write(json.dumps(TB.att(TB.SEC_A, 999, t + 60 * 20)) + "\n")
+            w2.read(oracle)
+            self.assertEqual(len(calls), 21, "after a restart only the new record is verified")
+        finally:
+            W.signed_by = real
