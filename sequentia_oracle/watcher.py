@@ -122,6 +122,10 @@ class Watcher:
             with open(self.state_path) as f:
                 self.state.update(json.load(f))
         self._pay_to = None
+        # (key, message, signature) already verified this run, valid or not: a log only grows, and
+        # verifying every record again each round (pure-Python curve arithmetic, milliseconds a
+        # record) kept the watcher busy for longer than its interval once the log was long
+        self._checked = set()
 
     def save(self):
         tmp = self.state_path + ".tmp"
@@ -142,6 +146,7 @@ class Watcher:
         two prices."""
         key = bytes.fromhex(oracle["key"])
         seen = self.state["seen"].setdefault(oracle["key"], {})
+        checked = self.__dict__.setdefault("_checked", set())
         for src in oracle["logs"]:
             try:
                 recs = fetch(src, self.timeout)
@@ -149,6 +154,10 @@ class Watcher:
                 say(f"{oracle.get('name', oracle['key'][:12])}: cannot read {src}: {type(e).__name__}: {e}")
                 continue
             for d in recs:
+                ck = (oracle["key"], d.get("message"), d.get("signature"))
+                if ck in checked:
+                    continue
+                checked.add(ck)
                 got = signed_by(key, d)
                 if got is None:
                     continue
